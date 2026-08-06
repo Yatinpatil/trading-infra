@@ -43,6 +43,7 @@ def _fetch_raw_ohlcv(symbol: str, start: date, end: date) -> pd.DataFrame:
     # shifts every trading date back by one day.
     raw["DATE"] = (pd.to_datetime(raw["DATE"]) + pd.Timedelta(hours=5, minutes=30)).dt.normalize()
     raw = raw.set_index("DATE").sort_index()
+    raw = raw[~raw.index.duplicated(keep="last")]  # defend against dupe rows in a flaky NSE response
     return raw[["OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"]].astype(
         {"OPEN": "float64", "HIGH": "float64", "LOW": "float64", "CLOSE": "float64", "VOLUME": "int64"}
     )
