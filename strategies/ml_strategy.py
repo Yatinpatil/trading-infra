@@ -13,6 +13,7 @@ a universe — engine/portfolio.py already calls `generate_signals(df)` once
 per symbol against a single strategy instance, so a model trained once on
 pooled, multi-symbol data slots in with no engine changes.
 """
+import io
 from pathlib import Path
 
 import joblib
@@ -85,19 +86,31 @@ class MLStrategy(Strategy):
         signals["exit_long"] = proba <= self.params["exit_threshold"]
         return signals
 
-    def save(self, path) -> None:
-        """Persist params + the fitted model (and `fitted_at`, if the caller
-        set one) so a long-running process — paper trading in particular —
-        doesn't have to refit from scratch on every invocation."""
+    def to_bytes(self) -> bytes:
+        """Serialize params + the fitted model (and `fitted_at`, if the
+        caller set one) so a long-running process — paper trading in
+        particular — doesn't have to refit from scratch on every
+        invocation. Returns raw bytes so the caller can store them
+        anywhere (a file, a database BLOB column, ...); `save`/`load`
+        below are just a file-based convenience over this."""
         if self.model is None:
-            raise RuntimeError("MLStrategy.save() called before fit()")
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump({"params": self.params, "model": self.model, "fitted_at": self.fitted_at}, path)
+            raise RuntimeError("MLStrategy.to_bytes() called before fit()")
+        buf = io.BytesIO()
+        joblib.dump({"params": self.params, "model": self.model, "fitted_at": self.fitted_at}, buf)
+        return buf.getvalue()
 
     @classmethod
-    def load(cls, path) -> "MLStrategy":
-        state = joblib.load(path)
+    def from_bytes(cls, data: bytes) -> "MLStrategy":
+        state = joblib.load(io.BytesIO(data))
         strategy = cls(state["params"])
         strategy.model = state["model"]
         strategy.fitted_at = state.get("fitted_at")
         return strategy
+
+    def save(self, path) -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(self.to_bytes())
+
+    @classmethod
+    def load(cls, path) -> "MLStrategy":
+        return cls.from_bytes(Path(path).read_bytes())

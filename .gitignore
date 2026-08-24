@@ -2,12 +2,14 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-data/cache/*
-!data/cache/.gitkeep
+data/trading.db
+data/cache_migrated_backup/
 execution/state/*
 !execution/state/.gitkeep
+execution/state_migrated_backup/
 .pytest_cache/
 *.egg-info/
 .idea/
 reports/
 logs/
+dashboard/

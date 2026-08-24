@@ -1,10 +1,9 @@
 """Integration tests against live NSE endpoints. Excluded from default runs
 (see pytest.ini addopts) — run explicitly with `pytest -m network`.
 """
-import shutil
-
 import pytest
 
+import db.connection as db_connection
 from data.loaders import get_ohlcv, get_raw_ohlcv
 
 pytestmark = pytest.mark.network
@@ -14,14 +13,8 @@ SAMPLE_SYMBOLS = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ITC"]
 
 @pytest.fixture
 def no_cache(tmp_path, monkeypatch):
-    import data.corporate_actions as ca_module
-    import data.loaders as loaders_module
-
-    cache_dir = tmp_path / "cache"
-    monkeypatch.setattr(loaders_module, "CACHE_DIR", cache_dir)
-    monkeypatch.setattr(ca_module, "CACHE_DIR", cache_dir)
+    monkeypatch.setattr(db_connection, "DB_PATH", tmp_path / "test.db")
     yield
-    shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 @pytest.mark.parametrize("symbol", SAMPLE_SYMBOLS)

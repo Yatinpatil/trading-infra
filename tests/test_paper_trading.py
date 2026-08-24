@@ -1,9 +1,15 @@
 import pandas as pd
 import pytest
 
+import db.connection as db_connection
 from execution.broker import PaperBroker
 from execution.paper_trading import PaperTradingEngine
 from strategies.base import Strategy, empty_signals
+
+
+@pytest.fixture(autouse=True)
+def _isolated_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_connection, "DB_PATH", tmp_path / "test.db")
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +75,7 @@ def test_entry_queues_then_fills_next_open_and_stop_loss_closes_it(tmp_path, mon
 
     strategy = FixedSignalStrategy(entry_dates=["2024-01-01"])
     config = {"costs": {}, "risk": {"position_size_pct": 0.1}, "params": {"stop_loss_pct": 0.05}}
-    broker = PaperBroker(tmp_path / "acct.json", initial_capital=100_000)
+    broker = PaperBroker("acct", initial_capital=100_000)
     engine = PaperTradingEngine(strategy, config, broker, ["AAA"], history_days=10)
 
     step1 = engine.run_daily_step("2024-01-01")
@@ -98,7 +104,7 @@ def test_running_the_same_day_twice_is_a_no_op(tmp_path, monkeypatch):
     monkeypatch.setattr("execution.paper_trading.get_ohlcv", _fake_get_ohlcv({"AAA": aaa}))
 
     strategy = FixedSignalStrategy(entry_dates=["2024-01-01"])
-    broker = PaperBroker(tmp_path / "acct.json", initial_capital=100_000)
+    broker = PaperBroker("acct", initial_capital=100_000)
     engine = PaperTradingEngine(strategy, NO_LIMITS_CONFIG, broker, ["AAA"], history_days=10)
 
     engine.run_daily_step("2024-01-01")
@@ -120,16 +126,15 @@ def test_state_persists_across_new_broker_and_engine_instances(tmp_path, monkeyp
     monkeypatch.setattr("execution.paper_trading.get_ohlcv", _fake_get_ohlcv({"AAA": aaa}))
 
     strategy = FixedSignalStrategy(entry_dates=["2024-01-01"], exit_dates=["2024-01-03"])
-    state_path = tmp_path / "acct.json"
 
-    broker1 = PaperBroker(state_path, initial_capital=100_000)
+    broker1 = PaperBroker("acct", initial_capital=100_000)
     engine1 = PaperTradingEngine(strategy, NO_LIMITS_CONFIG, broker1, ["AAA"], history_days=10)
     engine1.run_daily_step("2024-01-01")
     engine1.run_daily_step("2024-01-02")
     assert "AAA" in broker1.positions
 
     # simulate a fresh process picking the persisted account back up
-    broker2 = PaperBroker(state_path, initial_capital=999_999)
+    broker2 = PaperBroker("acct", initial_capital=999_999)
     assert broker2.cash == broker1.cash
     assert "AAA" in broker2.positions
 
@@ -174,7 +179,7 @@ def test_execution_is_immune_to_a_pending_future_corporate_action(tmp_path, monk
 
     strategy = FixedSignalStrategy(entry_dates=["2024-01-01"])
     config = {"costs": {}, "risk": {"position_size_pct": 0.1}, "params": {}}
-    broker = PaperBroker(tmp_path / "acct.json", initial_capital=100_000)
+    broker = PaperBroker("acct", initial_capital=100_000)
     engine = PaperTradingEngine(strategy, config, broker, ["AAA"], history_days=10)
 
     engine.run_daily_step("2024-01-01")
@@ -193,7 +198,7 @@ def test_max_concurrent_positions_limits_simultaneous_paper_entries(tmp_path, mo
 
     strategy = FixedSignalStrategy(entry_dates=["2024-01-01"])
     config = {"costs": {}, "risk": {"position_size_pct": 0.1, "max_concurrent_positions": 1}, "params": {}}
-    broker = PaperBroker(tmp_path / "acct.json", initial_capital=100_000)
+    broker = PaperBroker("acct", initial_capital=100_000)
     engine = PaperTradingEngine(strategy, config, broker, ["AAA", "BBB"], history_days=10)
 
     engine.run_daily_step("2024-01-01")
@@ -207,7 +212,7 @@ def test_non_trading_day_is_skipped_without_mutating_state(tmp_path, monkeypatch
     monkeypatch.setattr("execution.paper_trading.get_ohlcv", _fake_get_ohlcv({"AAA": aaa}))
 
     strategy = FixedSignalStrategy()
-    broker = PaperBroker(tmp_path / "acct.json", initial_capital=100_000)
+    broker = PaperBroker("acct", initial_capital=100_000)
     engine = PaperTradingEngine(strategy, NO_LIMITS_CONFIG, broker, ["AAA"], history_days=10)
 
     # 2024-01-03 (a Wednesday, so not a weekend) has no data at all -- e.g. an
@@ -233,7 +238,7 @@ def test_one_symbols_fetch_failure_does_not_block_the_rest_of_the_universe(tmp_p
     monkeypatch.setattr("execution.paper_trading.get_ohlcv", flaky)
 
     strategy = FixedSignalStrategy(entry_dates=["2024-01-01"])
-    broker = PaperBroker(tmp_path / "acct.json", initial_capital=100_000)
+    broker = PaperBroker("acct", initial_capital=100_000)
     engine = PaperTradingEngine(strategy, NO_LIMITS_CONFIG, broker, ["AAA", "BBB"], history_days=10)
 
     step1 = engine.run_daily_step("2024-01-01")
@@ -253,7 +258,7 @@ def test_warns_when_a_corporate_action_falls_inside_an_open_holding(tmp_path, mo
     monkeypatch.setattr("execution.paper_trading.get_corporate_actions", lambda symbol, use_cache=True: actions)
 
     strategy = FixedSignalStrategy(entry_dates=["2024-01-01"])
-    broker = PaperBroker(tmp_path / "acct.json", initial_capital=100_000)
+    broker = PaperBroker("acct", initial_capital=100_000)
     engine = PaperTradingEngine(strategy, NO_LIMITS_CONFIG, broker, ["AAA"], history_days=10)
 
     engine.run_daily_step("2024-01-01")

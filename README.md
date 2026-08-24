@@ -9,7 +9,9 @@ Most weekend backtests fool their author before they fool anyone else: look-ahea
 ## Architecture
 
 ```
-data/          OHLCV + corporate-action fetch (jugaad-data/NSE), parquet cache, retry/TTL, quality checks
+db/            The single SQLite store (data/trading.db): OHLCV, corporate actions, configs,
+               and every paper-trading account's positions/trades/equity/fitted model
+data/          OHLCV + corporate-action fetch (jugaad-data/NSE) into db/, retry/TTL, quality checks
 indicators/    Causal technical indicators (zscore, RSI, MACD, ADX, ATR, Bollinger, Donchian, ROC)
 strategies/    Strategy interface + mean_reversion, momentum, breakout, buy_and_hold, ml_strategy
 engine/        Single-stock and portfolio backtest engines, transaction cost model
@@ -17,13 +19,18 @@ risk/          Position sizing, concurrency/sector/correlation limits
 validation/    Train/test splits, walk-forward validation, grid search, Monte Carlo, benchmark comparison
 analytics/     Performance metrics, HTML tear sheets, strategy comparison tables
 universe/      Point-in-time index constituents, liquidity filtering
-execution/     Paper-trading broker + engine (persisted ledger, next-bar-open timing)
+execution/     Paper-trading broker (db/-backed) + engine (next-bar-open timing)
 ml/            Feature engineering + labeling for the ML strategy
-configs/       YAML strategy configs (universe, costs, risk, strategy params)
-scripts/       Data backfill, strategy comparison, ML walk-forward evaluation, hyperparameter grid search
+configs/       YAML strategy configs (universe, costs, risk, strategy params) -- seeded into db/ on first load
+scripts/       Data backfill, strategy comparison, ML walk-forward evaluation, hyperparameter grid
+               search, the daily paper-trading orchestrator, and the dashboard generator
+dashboard/     Generated (gitignored): dashboard/index.html, a static, self-contained page
+               summarizing every paper-trading account -- open it directly in a browser
 ```
 
 A `Strategy` only ever sees OHLCV and returns `entry_long`/`exit_long`/`entry_short`/`exit_short` signals — it never sees costs, sizing, or fills. That separation is what lets the same strategy code run in a single-stock backtest, a multi-symbol portfolio backtest, and daily paper trading with zero changes.
+
+Every persisted table lives in one SQLite file (`data/trading.db`, gitignored) rather than the parquet/JSON/CSV/YAML mix earlier phases used — see `db/schema.py` for the full table list. `scripts/migrate_to_sqlite.py` is the one-time, additive migration that populated it from that earlier layout; it's safe to re-run (every write is an upsert) and never touches the original files.
 
 ## Setup
 
@@ -64,6 +71,16 @@ python run_paper_trading.py --config ml_strategy_nifty50              # portfoli
 python run_paper_trading.py --config mean_reversion --report          # tear sheet from the ledger so far
 ```
 
+**Run every configured account for the day, then rebuild the dashboard** (this is what the scheduled job calls):
+```
+python scripts/run_daily_paper_trading.py
+```
+Then open `dashboard/index.html` directly in a browser — no server required.
+
+## Automated daily paper trading
+
+A Windows Task Scheduler job (`NIFTY50_PaperTrading_Daily`) runs `scripts/run_daily_paper_trading.py` on weekdays at 6:30 PM IST — after NSE's 3:30 PM close and NSE's own EOD data publishing delay. It steps five accounts (mean_reversion, momentum, breakout, buy_and_hold, ml_strategy, each its own ₹10L NIFTY 50 portfolio) and rebuilds the dashboard. Each account runs in its own subprocess, so one failing account never blocks the rest. Logs: `logs/orchestrator.log` (the day's run summary) and `logs/paper_trading.log` (account-level fill/warning detail).
+
 ## Testing
 
 ```
@@ -71,7 +88,7 @@ pytest              # offline suite — no network required
 pytest -m network   # also exercises real NSE endpoints
 ```
 
-164 tests, all passing, in the default (offline) suite.
+175 tests, all passing, in the default (offline) suite.
 
 ## What's actually been found running this
 
@@ -85,3 +102,4 @@ pytest -m network   # also exercises real NSE endpoints
 - **Costs are always on.** There is no "gross" backtest result — brokerage, STT, and slippage apply to every leg.
 - **Adjustment is backward and recomputed on every call**, so a paper-trading position's execution (fills, stops, mark-to-market) uses *raw* prices, never the adjusted series — adjustment can retroactively shift a historical date's value the moment a new corporate action is registered, which is fine for a one-shot backtest but wrong for state held open across many days.
 - **A model needs a training window before it needs a threshold.** `ml_strategy` is the one strategy that carries fitted state; it's evaluated with embargoed, walk-forward train/test splits, not a single split, because a single split is easy to accidentally cherry-pick.
+- **A paper account's cash/positions/pending-orders only persist on an explicit `save()`**, but closed trades and daily equity marks write immediately regardless — same contract the old JSON+CSV layout had, just backed by SQLite tables now. The per-account lock file is deliberately still a plain filesystem file, not a DB row: it's advisory process coordination (stopping two overlapping invocations of the CLI from racing), a different concern from the data SQLite already protects.

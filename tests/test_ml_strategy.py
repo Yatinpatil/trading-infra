@@ -136,3 +136,24 @@ def test_save_and_load_round_trips_params_model_and_fitted_at(tmp_path):
     assert reloaded.fitted_at == "2024-06-15"
     test_df = _dip_and_recover_ohlcv(n=100, seed=2, start="2023-01-01")
     pd.testing.assert_frame_equal(reloaded.generate_signals(test_df), strategy.generate_signals(test_df))
+
+
+def test_to_bytes_before_fit_raises():
+    strategy = MLStrategy()
+    with pytest.raises(RuntimeError, match="before fit"):
+        strategy.to_bytes()
+
+
+def test_to_bytes_and_from_bytes_round_trip():
+    strategy = MLStrategy({"min_samples_leaf": 15})
+    strategy.fit({"AAA": _dip_and_recover_ohlcv(n=300, seed=1)})
+    strategy.fitted_at = "2024-06-15"
+
+    blob = strategy.to_bytes()
+    assert isinstance(blob, bytes)
+    reloaded = MLStrategy.from_bytes(blob)
+
+    assert reloaded.params == strategy.params
+    assert reloaded.fitted_at == "2024-06-15"
+    test_df = _dip_and_recover_ohlcv(n=100, seed=2, start="2023-01-01")
+    pd.testing.assert_frame_equal(reloaded.generate_signals(test_df), strategy.generate_signals(test_df))

@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 import data.loaders as loaders_module
+import db.connection as db_connection
 
 
 def _mock_stock_df(rows):
@@ -28,7 +29,7 @@ def _mock_stock_df(rows):
 
 @pytest.fixture
 def isolated_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(loaders_module, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(db_connection, "DB_PATH", tmp_path / "test.db")
     return tmp_path
 
 

@@ -1,8 +1,9 @@
 """Daily paper-trading CLI — Phase 7's operational entry point. Invoke once
 per trading day (e.g. from cron / Windows Task Scheduler) after NSE market
 close; PaperTradingEngine (execution/paper_trading.py) picks up exactly
-where the previous invocation left off via a PaperBroker's persisted state
-under execution/state/.
+where the previous invocation left off via a PaperBroker's persisted state,
+which lives in the project's SQLite store (db/) alongside every other
+account's.
 
     python run_paper_trading.py --config mean_reversion --symbol RELIANCE
     python run_paper_trading.py --config mean_reversion              # portfolio mode, universe from config
@@ -10,8 +11,12 @@ under execution/state/.
 
 Every run is logged to logs/paper_trading.log (in addition to stdout) since
 a scheduled job's console output is easy to lose, and a per-account lock
-file guards against two overlapping invocations (e.g. a hung previous run
-still going when cron fires the next one) corrupting the same JSON state.
+file (still a plain filesystem file under execution/state/ -- SQLite's own
+locking guards the data, but an advisory lock is still what stops two
+overlapping invocations of *this script* from racing to fit two different
+models or double-count a day's fills) guards against two overlapping
+invocations (e.g. a hung previous run still going when cron fires the next
+one).
 """
 import argparse
 import logging
@@ -25,6 +30,7 @@ import pandas as pd
 from analytics.report import generate_report
 from configs import load_config
 from data.loaders import get_ohlcv
+from db.connection import connect
 from execution.broker import PaperBroker
 from execution.paper_trading import PaperTradingEngine
 from main import build_strategy, resolve_portfolio_symbols
@@ -86,16 +92,17 @@ def resolve_strategy(
     config: dict,
     symbols: list[str],
     as_of,
-    model_path: Path,
+    account: str,
     train_days: int,
     refit_days: int,
 ):
     """`build_strategy(config)` for every ordinary strategy. For `ml_strategy`
-    specifically: load the persisted, fitted model if it's still within
-    `refit_days` of when it was last fit, otherwise fit a fresh one on the
-    trailing `train_days` of history (the last `horizon` rows embargoed, so
-    the fit never uses a label that depends on data at or after `as_of`) and
-    persist it — mirroring the walk-forward evaluation's refit cadence
+    specifically: load the persisted, fitted model (stored as a BLOB in the
+    ml_models table, keyed by account) if it's still within `refit_days` of
+    when it was last fit, otherwise fit a fresh one on the trailing
+    `train_days` of history (the last `horizon` rows embargoed, so the fit
+    never uses a label that depends on data at or after `as_of`) and persist
+    it — mirroring the walk-forward evaluation's refit cadence
     (scripts/evaluate_ml_strategy.py) so a live account doesn't quietly keep
     running on a model that's gone stale.
     """
@@ -104,18 +111,21 @@ def resolve_strategy(
 
     as_of_date = pd.Timestamp(as_of or date.today()).date()
 
-    if model_path.exists():
-        strategy = MLStrategy.load(model_path)
-        if strategy.fitted_at is not None:
-            fitted_date = datetime.strptime(strategy.fitted_at, "%Y-%m-%d").date()
-            age_days = (as_of_date - fitted_date).days
-            if age_days < refit_days:
-                logger.info("Using ml_strategy model fit on %s (%d days old)", strategy.fitted_at, age_days)
-                return strategy
-            logger.info(
-                "ml_strategy model fit on %s is %d days old (>= refit_days=%d) -- refitting",
-                strategy.fitted_at, age_days, refit_days,
-            )
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT fitted_at, model_blob FROM ml_models WHERE account = ?", (account,)
+        ).fetchone()
+
+    if row is not None:
+        fitted_date = datetime.strptime(row["fitted_at"], "%Y-%m-%d").date()
+        age_days = (as_of_date - fitted_date).days
+        if age_days < refit_days:
+            logger.info("Using ml_strategy model fit on %s (%d days old)", row["fitted_at"], age_days)
+            return MLStrategy.from_bytes(row["model_blob"])
+        logger.info(
+            "ml_strategy model fit on %s is %d days old (>= refit_days=%d) -- refitting",
+            row["fitted_at"], age_days, refit_days,
+        )
 
     logger.info("Fitting a new ml_strategy model on the trailing %d days for %d symbols", train_days, len(symbols))
     train_start = as_of_date - timedelta(days=int(train_days * 1.6))  # calendar-day buffer for weekends/holidays
@@ -131,8 +141,13 @@ def resolve_strategy(
 
     strategy.fit(embargoed)
     strategy.fitted_at = as_of_date.isoformat()
-    strategy.save(model_path)
-    logger.info("Fitted and saved ml_strategy model to %s", model_path)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO ml_models (account, fitted_at, model_blob) VALUES (?, ?, ?) "
+            "ON CONFLICT(account) DO UPDATE SET fitted_at = excluded.fitted_at, model_blob = excluded.model_blob",
+            (account, strategy.fitted_at, strategy.to_bytes()),
+        )
+    logger.info("Fitted and saved ml_strategy model for account %s", account)
     return strategy
 
 
@@ -154,7 +169,7 @@ def main(argv=None):
     _ensure_file_logging()
     config = load_config(args.config)
     name = account_name(args.config, args.symbol)
-    broker = PaperBroker(STATE_DIR / f"{name}.json", initial_capital=args.capital)
+    broker = PaperBroker(name, initial_capital=args.capital)
 
     if args.report:
         report_path = generate_report(name, LedgerResult(broker), args.output_dir)
@@ -176,8 +191,7 @@ def main(argv=None):
         else:
             symbols = resolve_portfolio_symbols(config, args.as_of or date.today())
 
-        model_path = STATE_DIR / f"{name}_model.joblib"
-        strategy = resolve_strategy(config, symbols, args.as_of, model_path, args.train_days, args.refit_days)
+        strategy = resolve_strategy(config, symbols, args.as_of, name, args.train_days, args.refit_days)
         engine = PaperTradingEngine(strategy, config, broker, symbols)
         try:
             summary = engine.run_daily_step(args.as_of)

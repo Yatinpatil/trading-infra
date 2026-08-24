@@ -12,15 +12,12 @@ Dividends are intentionally left unadjusted — that's a price-return vs.
 total-return choice, not a bug; see get_corporate_actions docstring.
 """
 import re
-import time
-from datetime import date
-from pathlib import Path
+from datetime import date, datetime
 
 import pandas as pd
 
 from data.retry import with_retries
-
-CACHE_DIR = Path(__file__).parent / "cache"
+from db.connection import connect
 
 BONUS_RE = re.compile(r"Bonus\s+(\d+)\s*:\s*(\d+)", re.IGNORECASE)
 # NSE writes "Re 1/-" (singular rupee), not "Rs 1/-", whenever the new face
@@ -34,8 +31,44 @@ SPLIT_RE = re.compile(
 )
 
 
-def _actions_cache_path(symbol: str) -> Path:
-    return CACHE_DIR / f"{symbol.upper()}_corp_actions.parquet"
+def _load_cached_actions(symbol: str) -> pd.DataFrame:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT ex_date, action_type, ratio FROM corporate_actions WHERE symbol = ? ORDER BY ex_date",
+            (symbol,),
+        ).fetchall()
+    df = pd.DataFrame([dict(r) for r in rows], columns=["ex_date", "action_type", "ratio"])
+    if not df.empty:
+        df["ex_date"] = pd.to_datetime(df["ex_date"])
+    return df
+
+
+def _save_actions(symbol: str, df: pd.DataFrame) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM corporate_actions WHERE symbol = ?", (symbol,))
+        if not df.empty:
+            rows = [
+                (symbol, row.ex_date.strftime("%Y-%m-%d"), row.action_type, float(row.ratio))
+                for row in df.itertuples(index=False)
+            ]
+            conn.executemany(
+                "INSERT INTO corporate_actions (symbol, ex_date, action_type, ratio) VALUES (?,?,?,?)", rows
+            )
+        conn.execute(
+            "INSERT INTO corporate_actions_fetch_log (symbol, fetched_at) VALUES (?, ?) "
+            "ON CONFLICT(symbol) DO UPDATE SET fetched_at = excluded.fetched_at",
+            (symbol, datetime.now().isoformat()),
+        )
+
+
+def _cache_age_days(symbol: str) -> float | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT fetched_at FROM corporate_actions_fetch_log WHERE symbol = ?", (symbol,)
+        ).fetchone()
+    if row is None:
+        return None
+    return (datetime.now() - datetime.fromisoformat(row["fetched_at"])).total_seconds() / 86400
 
 
 def _parse_action(subject: str) -> tuple[str, float] | None:
@@ -111,22 +144,21 @@ def get_corporate_actions(symbol: str, use_cache: bool = True, max_cache_age_day
     returns empty if there's truly nothing cached yet. Either way, a failed
     fetch is never itself written to the cache: caching an empty result on
     failure would permanently poison it, since every later call would read
-    that empty parquet back and skip the network entirely, silently treating
+    that empty cache back and skip the network entirely, silently treating
     "we couldn't reach NSE this one time" as "this symbol has never had a
     bonus or split".
     """
-    path = _actions_cache_path(symbol)
-    if use_cache and path.exists():
-        age_days = (time.time() - path.stat().st_mtime) / 86400
-        if age_days < max_cache_age_days:
-            return pd.read_parquet(path)
+    symbol = symbol.upper()
+    age_days = _cache_age_days(symbol) if use_cache else None
+    if age_days is not None and age_days < max_cache_age_days:
+        return _load_cached_actions(symbol)
 
     try:
         raw = _fetch_raw_corporate_actions(symbol)
         fetch_succeeded = True
     except Exception:
-        if use_cache and path.exists():
-            return pd.read_parquet(path)  # stale cache beats nothing
+        if use_cache and age_days is not None:
+            return _load_cached_actions(symbol)  # stale cache beats nothing
         raw = []
         fetch_succeeded = False
 
@@ -149,8 +181,7 @@ def get_corporate_actions(symbol: str, use_cache: bool = True, max_cache_age_day
     df = df.sort_values("ex_date").reset_index(drop=True)
 
     if use_cache and fetch_succeeded:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(path)
+        _save_actions(symbol, df)
 
     return df
 

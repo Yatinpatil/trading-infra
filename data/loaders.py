@@ -1,18 +1,17 @@
 """OHLCV and corporate-action loaders for NSE equities, backed by jugaad-data.
 
-All fetched data is cached locally as Parquet so repeated backtest runs don't
-re-hit NSE. Cache files are keyed by symbol; callers ask for a date range and
-the cache is extended (not re-fetched) when the requested range grows.
+All fetched data is cached in the project's SQLite store (db/) so repeated
+backtest runs don't re-hit NSE. Rows are keyed by (symbol, date); callers
+ask for a date range and the cache is extended (not re-fetched) when the
+requested range grows.
 """
 from datetime import date, datetime
-from pathlib import Path
 
 import pandas as pd
 
 from data.corporate_actions import adjust_for_corporate_actions, get_corporate_actions
 from data.retry import with_retries
-
-CACHE_DIR = Path(__file__).parent / "cache"
+from db.connection import connect
 
 OHLCV_COLUMNS = ["OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"]
 
@@ -23,10 +22,6 @@ def _to_date(d) -> date:
     if isinstance(d, datetime):
         return d.date()
     return d
-
-
-def _ohlcv_cache_path(symbol: str) -> Path:
-    return CACHE_DIR / f"{symbol.upper()}_ohlcv.parquet"
 
 
 def _fetch_raw_ohlcv(symbol: str, start: date, end: date) -> pd.DataFrame:
@@ -65,15 +60,37 @@ def _fetch_raw_ohlcv(symbol: str, start: date, end: date) -> pd.DataFrame:
 
 
 def _load_cache(symbol: str) -> pd.DataFrame | None:
-    path = _ohlcv_cache_path(symbol)
-    if not path.exists():
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT date, open, high, low, close, volume FROM ohlcv WHERE symbol = ? ORDER BY date",
+            (symbol.upper(),),
+        ).fetchall()
+    if not rows:
         return None
-    return pd.read_parquet(path)
+    df = pd.DataFrame(
+        [(r["date"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in rows],
+        columns=["DATE", "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"],
+    )
+    df["DATE"] = pd.to_datetime(df["DATE"])
+    return df.set_index("DATE").astype(
+        {"OPEN": "float64", "HIGH": "float64", "LOW": "float64", "CLOSE": "float64", "VOLUME": "int64"}
+    )
 
 
 def _save_cache(symbol: str, df: pd.DataFrame) -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(_ohlcv_cache_path(symbol))
+    if df.empty:
+        return
+    rows = [
+        (symbol.upper(), idx.strftime("%Y-%m-%d"), float(row.OPEN), float(row.HIGH), float(row.LOW), float(row.CLOSE), int(row.VOLUME))
+        for idx, row in zip(df.index, df.itertuples(index=False))
+    ]
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO ohlcv (symbol, date, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(symbol, date) DO UPDATE SET "
+            "open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close, volume=excluded.volume",
+            rows,
+        )
 
 
 def get_raw_ohlcv(symbol: str, start, end, use_cache: bool = True) -> pd.DataFrame:

@@ -1,8 +1,12 @@
+from datetime import datetime, timedelta
+
 import pandas as pd
 import pytest
 
 import data.corporate_actions as corporate_actions_module
+import db.connection as db_connection
 from data.corporate_actions import _parse_action, adjust_for_corporate_actions, get_corporate_actions
+from db.connection import connect
 
 
 def test_parse_bonus():
@@ -139,14 +143,26 @@ def test_fetch_requests_a_wide_explicit_date_range(monkeypatch):
     assert captured["from_date"] == "01-01-2000"
 
 
-def test_a_failed_fetch_is_not_cached(tmp_path, monkeypatch):
-    """A transient NSE failure must not be written to the parquet cache --
-    otherwise every later call reads back the empty cache and never retries
-    the network, permanently treating "couldn't reach NSE this once" as
-    "this symbol has never had a bonus or split".
-    """
-    monkeypatch.setattr(corporate_actions_module, "CACHE_DIR", tmp_path)
+@pytest.fixture(autouse=True)
+def _isolated_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_connection, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr("data.retry.time.sleep", lambda seconds: None)
+
+
+def _backdate_fetch_log(symbol: str, days_ago: float) -> None:
+    stale_time = (datetime.now() - timedelta(days=days_ago)).isoformat()
+    with connect() as conn:
+        conn.execute(
+            "UPDATE corporate_actions_fetch_log SET fetched_at = ? WHERE symbol = ?", (stale_time, symbol)
+        )
+
+
+def test_a_failed_fetch_is_not_cached(monkeypatch):
+    """A transient NSE failure must not be written to the cache -- otherwise
+    every later call reads back the empty cache and never retries the
+    network, permanently treating "couldn't reach NSE this once" as "this
+    symbol has never had a bonus or split".
+    """
 
     def always_fails(symbol):
         raise ConnectionError("NSE is down")
@@ -156,11 +172,12 @@ def test_a_failed_fetch_is_not_cached(tmp_path, monkeypatch):
     result = get_corporate_actions("RELIANCE", use_cache=True)
 
     assert result.empty
-    assert not (tmp_path / "RELIANCE_corp_actions.parquet").exists()
+    with connect() as conn:
+        row = conn.execute("SELECT 1 FROM corporate_actions_fetch_log WHERE symbol = 'RELIANCE'").fetchone()
+    assert row is None
 
 
-def test_a_successful_fetch_is_cached(tmp_path, monkeypatch):
-    monkeypatch.setattr(corporate_actions_module, "CACHE_DIR", tmp_path)
+def test_a_successful_fetch_is_cached(monkeypatch):
     monkeypatch.setattr(
         corporate_actions_module,
         "_fetch_raw_corporate_actions",
@@ -170,11 +187,12 @@ def test_a_successful_fetch_is_cached(tmp_path, monkeypatch):
     result = get_corporate_actions("RELIANCE", use_cache=True)
 
     assert len(result) == 1
-    assert (tmp_path / "RELIANCE_corp_actions.parquet").exists()
+    with connect() as conn:
+        row = conn.execute("SELECT 1 FROM corporate_actions_fetch_log WHERE symbol = 'RELIANCE'").fetchone()
+    assert row is not None
 
 
-def test_a_fresh_cache_is_served_without_hitting_the_network(tmp_path, monkeypatch):
-    monkeypatch.setattr(corporate_actions_module, "CACHE_DIR", tmp_path)
+def test_a_fresh_cache_is_served_without_hitting_the_network(monkeypatch):
     calls = {"n": 0}
 
     def counting_fetch(symbol):
@@ -189,10 +207,7 @@ def test_a_fresh_cache_is_served_without_hitting_the_network(tmp_path, monkeypat
     assert calls["n"] == 1  # second call served entirely from cache
 
 
-def test_a_stale_cache_past_the_ttl_is_refreshed(tmp_path, monkeypatch):
-    import os
-
-    monkeypatch.setattr(corporate_actions_module, "CACHE_DIR", tmp_path)
+def test_a_stale_cache_past_the_ttl_is_refreshed(monkeypatch):
     calls = {"n": 0}
 
     def counting_fetch(symbol):
@@ -202,29 +217,21 @@ def test_a_stale_cache_past_the_ttl_is_refreshed(tmp_path, monkeypatch):
     monkeypatch.setattr(corporate_actions_module, "_fetch_raw_corporate_actions", counting_fetch)
 
     get_corporate_actions("RELIANCE", use_cache=True, max_cache_age_days=7)
-    path = tmp_path / "RELIANCE_corp_actions.parquet"
-    old_time = corporate_actions_module.time.time() - 8 * 86400
-    os.utime(path, (old_time, old_time))
+    _backdate_fetch_log("RELIANCE", days_ago=8)
 
     get_corporate_actions("RELIANCE", use_cache=True, max_cache_age_days=7)
 
     assert calls["n"] == 2  # the stale cache triggered a refetch
 
 
-def test_a_refetch_failure_falls_back_to_the_stale_cache(tmp_path, monkeypatch):
-    import os
-
-    monkeypatch.setattr(corporate_actions_module, "CACHE_DIR", tmp_path)
+def test_a_refetch_failure_falls_back_to_the_stale_cache(monkeypatch):
     monkeypatch.setattr(
         corporate_actions_module,
         "_fetch_raw_corporate_actions",
         lambda symbol: [{"subject": "Bonus 1:1", "exDate": "01-Jan-2024"}],
     )
     get_corporate_actions("RELIANCE", use_cache=True, max_cache_age_days=7)
-
-    path = tmp_path / "RELIANCE_corp_actions.parquet"
-    old_time = corporate_actions_module.time.time() - 8 * 86400
-    os.utime(path, (old_time, old_time))
+    _backdate_fetch_log("RELIANCE", days_ago=8)
 
     def always_fails(symbol):
         raise ConnectionError("NSE is down")

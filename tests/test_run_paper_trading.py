@@ -5,15 +5,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import db.connection as db_connection
 import run_paper_trading as rpt
-from strategies.ml_strategy import MLStrategy
+from db.connection import connect
 
 
 @pytest.fixture(autouse=True)
-def _isolated_logging(monkeypatch, tmp_path):
-    """Keep each test's log file inside its own tmp_path and stop handlers
-    from accumulating on the module-level logger across tests."""
+def _isolated_logging_and_db(tmp_path, monkeypatch):
+    """Keep each test's log file and DB inside its own tmp_path, and stop
+    handlers from accumulating on the module-level logger across tests."""
     monkeypatch.setattr(rpt, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(db_connection, "DB_PATH", tmp_path / "test.db")
     rpt.logger.handlers.clear()
     yield
     rpt.logger.handlers.clear()
@@ -35,6 +37,11 @@ def _fake_ohlcv(symbol, start, end, adjust=True, use_cache=True):
     )
 
 
+def _account_exists(name: str) -> bool:
+    with connect() as conn:
+        return conn.execute("SELECT 1 FROM accounts WHERE name = ?", (name,)).fetchone() is not None
+
+
 CONFIG = {
     "strategy": "mean_reversion",
     "params": {"lookback": 10, "entry_zscore": -2.0, "exit_zscore": 0.0},
@@ -45,7 +52,7 @@ CONFIG = {
 
 
 def _patch_common(monkeypatch, tmp_path):
-    monkeypatch.setattr(rpt, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(rpt, "STATE_DIR", tmp_path)  # lock files only -- account state lives in the DB
     monkeypatch.setattr(rpt, "load_config", lambda name: CONFIG)
     monkeypatch.setattr("execution.paper_trading.get_ohlcv", _fake_ohlcv)
     monkeypatch.setattr(
@@ -54,7 +61,7 @@ def _patch_common(monkeypatch, tmp_path):
     )
 
 
-def test_daily_step_writes_state_under_the_configured_state_dir(monkeypatch, tmp_path):
+def test_daily_step_writes_state_for_the_account(monkeypatch, tmp_path):
     _patch_common(monkeypatch, tmp_path)
 
     summary = rpt.main(
@@ -62,7 +69,7 @@ def test_daily_step_writes_state_under_the_configured_state_dir(monkeypatch, tmp
     )
 
     assert summary["skipped"] is False
-    assert (tmp_path / "mean_reversion_RELIANCE.json").exists()
+    assert _account_exists("mean_reversion_RELIANCE")
 
 
 def test_report_flag_reads_ledger_and_writes_tearsheet(monkeypatch, tmp_path):
@@ -90,7 +97,7 @@ def test_a_fresh_lock_blocks_a_concurrent_run(monkeypatch, tmp_path):
 
     assert summary["skipped"] is True
     assert "in progress" in summary["reason"]
-    assert not (tmp_path / "mean_reversion_RELIANCE.json").exists()  # no step was run
+    assert not _account_exists("mean_reversion_RELIANCE")  # no step was run
 
 
 def test_a_stale_lock_is_overridden(monkeypatch, tmp_path):
@@ -103,7 +110,7 @@ def test_a_stale_lock_is_overridden(monkeypatch, tmp_path):
     summary = rpt.main(["--config", "mean_reversion", "--symbol", "RELIANCE", "--as-of", "2023-06-15"])
 
     assert summary["skipped"] is False
-    assert (tmp_path / "mean_reversion_RELIANCE.json").exists()
+    assert _account_exists("mean_reversion_RELIANCE")
 
 
 def test_lock_is_released_after_a_successful_run(monkeypatch, tmp_path):
@@ -151,6 +158,13 @@ def _patch_common_ml(monkeypatch, tmp_path):
     )
 
 
+def _ml_model_row(account: str):
+    with connect() as conn:
+        return conn.execute(
+            "SELECT fitted_at, model_blob FROM ml_models WHERE account = ?", (account,)
+        ).fetchone()
+
+
 def test_ml_strategy_fits_fresh_and_persists_a_model(monkeypatch, tmp_path):
     _patch_common_ml(monkeypatch, tmp_path)
 
@@ -159,17 +173,16 @@ def test_ml_strategy_fits_fresh_and_persists_a_model(monkeypatch, tmp_path):
     )
 
     assert summary["skipped"] is False
-    model_path = tmp_path / "ml_strategy_nifty50_RELIANCE_model.joblib"
-    assert model_path.exists()
-    assert MLStrategy.load(model_path).fitted_at == "2023-06-15"
+    row = _ml_model_row("ml_strategy_nifty50_RELIANCE")
+    assert row is not None
+    assert row["fitted_at"] == "2023-06-15"
 
 
 def test_ml_strategy_reuses_a_fresh_model_without_refitting(monkeypatch, tmp_path):
     _patch_common_ml(monkeypatch, tmp_path)
 
     rpt.main(["--config", "ml_strategy_nifty50", "--symbol", "RELIANCE", "--as-of", "2023-06-15", "--train-days", "150"])
-    model_path = tmp_path / "ml_strategy_nifty50_RELIANCE_model.joblib"
-    first_mtime = model_path.stat().st_mtime
+    first_blob = _ml_model_row("ml_strategy_nifty50_RELIANCE")["model_blob"]
 
     rpt.main(
         [
@@ -178,16 +191,16 @@ def test_ml_strategy_reuses_a_fresh_model_without_refitting(monkeypatch, tmp_pat
         ]
     )
 
-    assert model_path.stat().st_mtime == first_mtime  # still fresh -- not rewritten
-    assert MLStrategy.load(model_path).fitted_at == "2023-06-15"  # unchanged
+    row = _ml_model_row("ml_strategy_nifty50_RELIANCE")
+    assert row["fitted_at"] == "2023-06-15"  # unchanged
+    assert row["model_blob"] == first_blob  # not rewritten
 
 
 def test_ml_strategy_refits_once_the_model_is_stale(monkeypatch, tmp_path):
     _patch_common_ml(monkeypatch, tmp_path)
 
     rpt.main(["--config", "ml_strategy_nifty50", "--symbol", "RELIANCE", "--as-of", "2023-06-15", "--train-days", "150"])
-    model_path = tmp_path / "ml_strategy_nifty50_RELIANCE_model.joblib"
-    first_mtime = model_path.stat().st_mtime
+    first_blob = _ml_model_row("ml_strategy_nifty50_RELIANCE")["model_blob"]
 
     rpt.main(
         [
@@ -196,5 +209,6 @@ def test_ml_strategy_refits_once_the_model_is_stale(monkeypatch, tmp_path):
         ]
     )
 
-    assert model_path.stat().st_mtime != first_mtime
-    assert MLStrategy.load(model_path).fitted_at == "2024-01-15"
+    row = _ml_model_row("ml_strategy_nifty50_RELIANCE")
+    assert row["fitted_at"] == "2024-01-15"
+    assert row["model_blob"] != first_blob

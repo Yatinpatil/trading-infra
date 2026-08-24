@@ -1,6 +1,6 @@
 """One-off/periodic bulk backfill: pull historical OHLCV + corporate actions
-for every symbol in a given index into the local parquet cache
-(data/cache/), so backtests and paper trading never have to hit NSE
+for every symbol in a given index into the project's SQLite store
+(data/trading.db), so backtests and paper trading never have to hit NSE
 symbol-by-symbol on a cold cache.
 
 Deliberately sequential with a delay between symbols — NSE's unofficial API
