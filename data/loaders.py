@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from data.corporate_actions import adjust_for_corporate_actions, get_corporate_actions
+from data.retry import with_retries
 
 CACHE_DIR = Path(__file__).parent / "cache"
 
@@ -31,7 +32,21 @@ def _ohlcv_cache_path(symbol: str) -> Path:
 def _fetch_raw_ohlcv(symbol: str, start: date, end: date) -> pd.DataFrame:
     from jugaad_data.nse import stock_df
 
-    raw = stock_df(symbol=symbol, from_date=start, to_date=end, series="EQ")
+    raw = with_retries(lambda: stock_df(symbol=symbol, from_date=start, to_date=end, series="EQ"))
+    if raw.empty:
+        return pd.DataFrame(columns=OHLCV_COLUMNS).set_index(
+            pd.DatetimeIndex([], name="DATE")
+        )
+
+    # stock_df's `series` kwarg is NOT honored server-side: NSE returns every
+    # series traded under this symbol (equity plus unrelated NCD/bond series
+    # like N1..ND, which share the same NSE symbol but trade at wildly
+    # different price levels). Filtering here is required, not defensive —
+    # without it, the later dedup-by-date keeps whichever series happens to
+    # sort last for each date, silently splicing bond prices into the equity
+    # series (confirmed against NTPC: unfiltered data alternates between
+    # ~100 and ~1400 day to day).
+    raw = raw[raw["SERIES"] == "EQ"]
     if raw.empty:
         return pd.DataFrame(columns=OHLCV_COLUMNS).set_index(
             pd.DatetimeIndex([], name="DATE")

@@ -4,7 +4,10 @@ __pycache__/
 venv/
 data/cache/*
 !data/cache/.gitkeep
+execution/state/*
+!execution/state/.gitkeep
 .pytest_cache/
 *.egg-info/
 .idea/
 reports/
+logs/

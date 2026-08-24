@@ -1,0 +1,27 @@
+strategy: ml_strategy
+
+params:
+  horizon: 5
+  return_threshold: 0.0
+  entry_threshold: 0.6
+  exit_threshold: 0.45
+  max_iter: 100
+  max_depth: 2
+  learning_rate: 0.03
+  min_samples_leaf: 200
+  l2_regularization: 2.0
+  stop_loss_pct: 0.05
+
+universe:
+  index: NIFTY 50
+  min_avg_daily_value: 5000000  # INR
+
+costs:
+  brokerage_pct: 0.0003
+  stt_pct: 0.001
+  slippage_pct: 0.0005
+
+risk:
+  max_concurrent_positions: 15
+  max_exposure_per_sector_pct: 0.25
+  position_size_pct: 0.05
