@@ -104,7 +104,16 @@ def get_raw_ohlcv(symbol: str, start, end, use_cache: bool = True) -> pd.DataFra
         if start < cached_start:
             missing_ranges.append((start, cached_start))
         if end > cached_end:
-            missing_ranges.append((cached_end, end))
+            # NSE's history endpoint has been observed to silently drop the
+            # most recent day when the requested range is exactly
+            # (cached_end, end) -- e.g. (2026-08-21, 2026-08-24) reproducibly
+            # returned only the 21st, while widening the start by a few days
+            # to a range NSE hadn't seen before reliably returned all rows
+            # including the 24th. Padding the trailing fetch's start avoids
+            # depending on a single day's boundary matching whatever NSE (or
+            # a caching layer in front of it) is keying on.
+            padded_start = min(cached_end, end - pd.Timedelta(days=5))
+            missing_ranges.append((padded_start, end))
 
         fetched = [cached]
         for m_start, m_end in missing_ranges:
