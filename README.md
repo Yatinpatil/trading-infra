@@ -26,6 +26,9 @@ scripts/       Data backfill, strategy comparison, ML walk-forward evaluation, h
                search, the daily paper-trading orchestrator, and the dashboard generator
 dashboard/     Generated (gitignored): dashboard/index.html, a static, self-contained page
                summarizing every paper-trading account -- open it directly in a browser
+api/           FastAPI backend for the interactive web UI -- live account state, "Run Now" /
+               "Run All" triggers, log tailing; serves frontend/dist/ once it's built
+frontend/      React (Vite) app for the same data, interactively -- see "Web UI" below
 ```
 
 A `Strategy` only ever sees OHLCV and returns `entry_long`/`exit_long`/`entry_short`/`exit_short` signals — it never sees costs, sizing, or fills. That separation is what lets the same strategy code run in a single-stock backtest, a multi-symbol portfolio backtest, and daily paper trading with zero changes.
@@ -81,6 +84,23 @@ Then open `dashboard/index.html` directly in a browser — no server required.
 
 A Windows Task Scheduler job (`NIFTY50_PaperTrading_Daily`) runs `scripts/run_daily_paper_trading.py` on weekdays at 6:30 PM IST — after NSE's 3:30 PM close and NSE's own EOD data publishing delay. It steps five accounts (mean_reversion, momentum, breakout, buy_and_hold, ml_strategy, each its own ₹10L NIFTY 50 portfolio) and rebuilds the dashboard. Each account runs in its own subprocess, so one failing account never blocks the rest. Logs: `logs/orchestrator.log` (the day's run summary) and `logs/paper_trading.log` (account-level fill/warning detail).
 
+## Web UI
+
+A FastAPI backend (`api/`) exposes the same account state the dashboard generator reads, plus a "Run Now" / "Run All" trigger; a React app (`frontend/`) polls it for a live, navigable view (per-account detail pages, equity comparison chart, log tailing) instead of the static dashboard's fixed snapshot.
+
+**Day to day, one process serves both** — build the frontend once (or after changing it), then run only the backend:
+```
+cd frontend && npm install && npm run build && cd ..
+python -m uvicorn api.main:app
+```
+Open `http://127.0.0.1:8000`. Triggering a run from the UI calls the same `run_paper_trading.py` path the scheduled job uses, so it's covered by the same per-account lock file and `last_run_date` guard — running it twice in a row is a no-op the second time, not a double-fill.
+
+**Frontend dev mode** (hot reload, proxies `/api` to the backend):
+```
+python -m uvicorn api.main:app          # terminal 1
+cd frontend && npm install && npm run dev   # terminal 2 — http://127.0.0.1:5173
+```
+
 ## Testing
 
 ```
@@ -88,7 +108,7 @@ pytest              # offline suite — no network required
 pytest -m network   # also exercises real NSE endpoints
 ```
 
-175 tests, all passing, in the default (offline) suite.
+180 tests, all passing, in the default (offline) suite.
 
 ## What's actually been found running this
 

@@ -12,103 +12,21 @@ automatically after each day's step.
 """
 import json
 import sys
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from analytics.metrics import compute_metrics
-from db.connection import connect
-from execution.broker import PaperBroker
+from execution.accounts import ACCOUNTS, load_account_state
 
 ROOT = Path(__file__).parent.parent
 OUTPUT_PATH = ROOT / "dashboard" / "index.html"
 
-ACCOUNTS = [
-    {"key": "mean_reversion", "label": "Mean Reversion", "account": "mean_reversion_nifty50_portfolio",
-     "color_light": "#1F9C8C", "color_dark": "#3BB5A6"},
-    {"key": "momentum", "label": "Momentum", "account": "momentum_nifty50_portfolio",
-     "color_light": "#BD3F5A", "color_dark": "#D8637E"},
-    {"key": "breakout", "label": "Breakout", "account": "breakout_nifty50_portfolio",
-     "color_light": "#9B6FC4", "color_dark": "#AE8BD6"},
-    {"key": "buy_and_hold", "label": "Buy & Hold", "account": "buy_and_hold_nifty50_portfolio",
-     "color_light": "#9C7D22", "color_dark": "#C7A43A"},
-    {"key": "ml_strategy", "label": "ML Strategy", "account": "ml_strategy_nifty50_portfolio",
-     "color_light": "#3B7DBF", "color_dark": "#5B9BDB"},
-]
-
-STALE_AFTER_DAYS = 3  # a run older than this (accounting for weekends) is flagged, not just "not today"
-
 
 def load_account(meta: dict) -> dict:
-    with connect() as conn:
-        started = conn.execute(
-            "SELECT 1 FROM accounts WHERE name = ?", (meta["account"],)
-        ).fetchone() is not None
-    broker = PaperBroker(meta["account"])
-
-    equity = broker.equity_curve()
-    trades = broker.trades()
-    metrics = compute_metrics(equity, trades) if len(equity) > 1 else None
-
-    status = "not_started"
-    age_days = None
-    if started and broker.last_run_date:
-        age_days = (date.today() - datetime.strptime(broker.last_run_date, "%Y-%m-%d").date()).days
-        status = "stale" if age_days > STALE_AFTER_DAYS else "current"
-
-    today_change_pct = None
-    if len(equity) >= 2:
-        today_change_pct = float(equity.iloc[-1] / equity.iloc[-2] - 1.0)
-
-    positions = [
-        {
-            "symbol": sym,
-            "quantity": pos.quantity,
-            "entry_price": pos.entry_price,
-            "entry_date": pos.entry_date,
-            "stop_price": pos.stop_price,
-        }
-        for sym, pos in sorted(broker.positions.items())
-    ]
-
-    recent_trades_records = []
-    if not trades.empty:
-        for _, row in trades.tail(10).iloc[::-1].iterrows():
-            recent_trades_records.append(
-                {
-                    "symbol": row["symbol"],
-                    "entry_date": str(row["entry_date"].date()) if hasattr(row["entry_date"], "date") else str(row["entry_date"]),
-                    "exit_date": str(row["exit_date"].date()) if hasattr(row["exit_date"], "date") else str(row["exit_date"]),
-                    "pnl": float(row["pnl"]),
-                    "pnl_pct": float(row["pnl_pct"]),
-                    "exit_reason": row["exit_reason"],
-                }
-            )
-
-    equity_weekly = equity.resample("W").last().dropna() if len(equity) > 1 else equity
-    dates = [d.strftime("%Y-%m-%d") for d in equity_weekly.index]
-    values = [round(float(v), 2) for v in equity_weekly.values]
-
-    return {
-        **meta,
-        "started": started,
-        "status": status,
-        "age_days": age_days,
-        "last_run_date": broker.last_run_date,
-        "cash": broker.cash,
-        "equity": float(equity.iloc[-1]) if len(equity) else None,
-        "today_change_pct": today_change_pct,
-        "num_open_positions": len(positions),
-        "positions": positions,
-        "num_trades": len(trades),
-        "recent_trades": recent_trades_records,
-        "metrics": metrics,
-        "dates": dates,
-        "values": values,
-        "pending_entries": sorted(broker.pending_entries),
-        "pending_exits": sorted(broker.pending_exits),
-    }
+    state = load_account_state(meta, trade_limit=10)
+    state["recent_trades"] = state.pop("trades")
+    return state
 
 
 def render(accounts: list[dict]) -> str:

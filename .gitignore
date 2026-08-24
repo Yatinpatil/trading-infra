@@ -13,3 +13,5 @@ execution/state_migrated_backup/
 reports/
 logs/
 dashboard/
+frontend/node_modules/
+frontend/dist/
