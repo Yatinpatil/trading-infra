@@ -13,7 +13,8 @@ db/            The single SQLite store (data/trading.db): OHLCV, corporate actio
                and every paper-trading account's positions/trades/equity/fitted model
 data/          OHLCV + corporate-action fetch (jugaad-data/NSE) into db/, retry/TTL, quality checks
 indicators/    Causal technical indicators (zscore, RSI, MACD, ADX, ATR, Bollinger, Donchian, ROC)
-strategies/    Strategy interface + mean_reversion, momentum, breakout, buy_and_hold, ml_strategy
+strategies/    Strategy interface + mean_reversion, momentum, breakout, buy_and_hold, ml_strategy,
+               rsi_mean_reversion, bollinger_breakout, adx_trend
 engine/        Single-stock and portfolio backtest engines, transaction cost model
 risk/          Position sizing, concurrency/sector/correlation limits
 validation/    Train/test splits, walk-forward validation, grid search, Monte Carlo, benchmark comparison
@@ -82,7 +83,9 @@ Then open `dashboard/index.html` directly in a browser — no server required.
 
 ## Automated daily paper trading
 
-A Windows Task Scheduler job (`NIFTY50_PaperTrading_Daily`) runs `scripts/run_daily_paper_trading.py` on weekdays at 6:30 PM IST — after NSE's 3:30 PM close and NSE's own EOD data publishing delay. It steps five accounts (mean_reversion, momentum, breakout, buy_and_hold, ml_strategy, each its own ₹10L NIFTY 50 portfolio) and rebuilds the dashboard. Each account runs in its own subprocess, so one failing account never blocks the rest. Logs: `logs/orchestrator.log` (the day's run summary) and `logs/paper_trading.log` (account-level fill/warning detail).
+A Windows Task Scheduler job (`NIFTY50_PaperTrading_Daily`) runs `scripts/poll_and_run_paper_trading.py` every 15 minutes from 4:00-6:45 PM IST on weekdays — after NSE's 3:30 PM close, but before NSE's own EOD data is guaranteed to be published. Each invocation is a cheap check (a single-symbol, uncached fetch) for whether today's data is actually out yet; the moment it is, that invocation runs the real step immediately rather than waiting for a fixed later time, and every other invocation that day is then a no-op (`accounts.last_run_date` already matches today). If data still isn't out by 6 PM, the last few polls run the step anyway rather than silently skip the day — the same safety margin the old fixed 6:30 PM trigger gave, just no longer the common case.
+
+The step itself (`scripts/run_daily_paper_trading.py`) steps eight accounts (mean_reversion, momentum, breakout, buy_and_hold, ml_strategy, rsi_mean_reversion, bollinger_breakout, adx_trend, each its own ₹10L NIFTY 50 portfolio) and rebuilds the dashboard. Each account runs in its own subprocess, so one failing account never blocks the rest. Logs: `logs/orchestrator.log` (the day's run summary) and `logs/paper_trading.log` (account-level fill/warning detail).
 
 ## Web UI
 
@@ -108,13 +111,13 @@ pytest              # offline suite — no network required
 pytest -m network   # also exercises real NSE endpoints
 ```
 
-180 tests, all passing, in the default (offline) suite.
+195 tests, all passing, in the default (offline) suite.
 
 ## What's actually been found running this
 
-- **Buy-and-hold beat every active strategy** on a 48-stock NIFTY 50 backtest, 2021–2026, net of costs. Mean reversion had the best win rate and smallest drawdown but its edge didn't clear 1,140 round-trips of brokerage, STT, and slippage.
+- **Buy-and-hold beat every active strategy** on a 48-stock NIFTY 50 backtest, 2021–2026, net of costs (CAGR 21.6%, Sharpe 1.22). Every rule-based active strategy trailed it: momentum (CAGR 5.8%, Sharpe 0.58), RSI mean-reversion (3.6%, Sharpe 0.62 — the best Sharpe and by far the smallest drawdown of any active strategy, -9.3% vs. -13% to -25% for the rest), mean reversion (3.0%, Sharpe 0.44), breakout (2.4%, Sharpe 0.30), and Bollinger breakout (1.0%, Sharpe 0.16). **ADX trend came back flat-to-negative** (CAGR -0.2%, Sharpe 0.02) — a strategy that's genuinely indistinguishable from noise net of costs, kept live anyway for the same reason the others are: an honest negative result is the point, not a bug to hide.
 - **A gradient-boosted classifier overfit badly** with default hyperparameters — ~20-28% CAGR in-sample every walk-forward window, but out-of-sample Sharpe of only 0.26 and wildly unstable per-window returns. Regularizing hard (shallow trees, large leaf minimums, strong L2) raised out-of-sample Sharpe to 0.87, confirmed as a robust region rather than a lucky pick via a 12-point grid search.
-- **Two real data bugs were found and fixed** while backtesting on freshly-downloaded data: `jugaad-data`'s equity-series filter is silently ignored by NSE's API, splicing bond/NCD prices into equity series; and the corporate-action parser missed the "Re 1/-" wording NSE uses for most real stock splits. Outlier days across the NIFTY 50 universe went from 440+ to 8, the remainder being real market events (not bugs).
+- **Two real data bugs were found and fixed** while backtesting on freshly-downloaded data: `jugaad-data`'s equity-series filter is silently ignored by NSE's API, splicing bond/NCD prices into equity series; and the corporate-action parser missed the "Re 1/-" wording NSE uses for most real stock splits. Outlier days across the NIFTY 50 universe went from 440+ to 8, the remainder being real market events (not bugs). A third, live-only bug: NSE's history endpoint reproducibly drops the newest day when queried with the exact range the cache-extension logic used every day, silently stalling paper trading — fixed by padding that fetch's start date.
 
 ## Design notes worth knowing before extending this
 

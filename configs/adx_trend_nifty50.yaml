@@ -1,0 +1,20 @@
+strategy: adx_trend
+
+params:
+  lookback: 14
+  entry_adx: 25.0
+  stop_loss_pct: 0.05
+
+universe:
+  index: NIFTY 50
+  min_avg_daily_value: 5000000  # INR
+
+costs:
+  brokerage_pct: 0.0003
+  stt_pct: 0.001
+  slippage_pct: 0.0005
+
+risk:
+  max_concurrent_positions: 15
+  max_exposure_per_sector_pct: 0.25
+  position_size_pct: 0.05

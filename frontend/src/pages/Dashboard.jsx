@@ -24,7 +24,7 @@ export default function Dashboard() {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 }}>
         <p style={{ color: "var(--ink-2)", margin: 0 }}>
-          5 strategies, one ₹10L account each, refreshed after every trading day's close.
+          {accounts ? accounts.length : "—"} strategies, one ₹10L account each, refreshed after every trading day's close.
         </p>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button className="btn" onClick={refetch}>

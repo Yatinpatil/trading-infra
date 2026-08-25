@@ -157,7 +157,7 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
 <div class="wrap">
   <div class="eyebrow"><span class="dot"></span>PAPER TRADING &middot; NIFTY 50 &middot; LIVE STATE</div>
   <h1>Paper Trading Dashboard</h1>
-  <p class="subhead">5 strategies, one &#8377;10L account each, refreshed after every trading day's close.</p>
+  <p class="subhead">{len(ACCOUNTS)} strategies, one &#8377;10L account each, refreshed after every trading day's close.</p>
 
   <div class="section-head"><h2>Accounts</h2><span class="hint">generated {generated_at}</span></div>
   <div class="card" style="overflow-x:auto">

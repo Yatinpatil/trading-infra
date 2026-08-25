@@ -23,6 +23,9 @@ STRATEGIES = {
     "momentum": {"lookback": 60, "entry_threshold": 0.10, "exit_threshold": 0.0, "stop_loss_pct": 0.05},
     "breakout": {"entry_lookback": 20, "exit_lookback": 10, "stop_loss_pct": 0.05},
     "buy_and_hold": {"stop_loss_pct": 0.05},
+    "rsi_mean_reversion": {"lookback": 14, "entry_rsi": 30.0, "exit_rsi": 50.0, "stop_loss_pct": 0.05},
+    "bollinger_breakout": {"lookback": 20, "num_std": 2.0, "stop_loss_pct": 0.05},
+    "adx_trend": {"lookback": 14, "entry_adx": 25.0, "stop_loss_pct": 0.05},
 }
 
 

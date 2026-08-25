@@ -34,6 +34,18 @@ ACCOUNTS = [
         "key": "ml_strategy", "label": "ML Strategy", "config": "ml_strategy_nifty50",
         "account": "ml_strategy_nifty50_portfolio", "color_light": "#3B7DBF", "color_dark": "#5B9BDB",
     },
+    {
+        "key": "rsi_mean_reversion", "label": "RSI Mean Reversion", "config": "rsi_mean_reversion_nifty50",
+        "account": "rsi_mean_reversion_nifty50_portfolio", "color_light": "#C1613D", "color_dark": "#D98A63",
+    },
+    {
+        "key": "bollinger_breakout", "label": "Bollinger Breakout", "config": "bollinger_breakout_nifty50",
+        "account": "bollinger_breakout_nifty50_portfolio", "color_light": "#2E7D91", "color_dark": "#4FA3B8",
+    },
+    {
+        "key": "adx_trend", "label": "ADX Trend", "config": "adx_trend_nifty50",
+        "account": "adx_trend_nifty50_portfolio", "color_light": "#5C7A3D", "color_dark": "#84A85E",
+    },
 ]
 
 STALE_AFTER_DAYS = 3  # a run older than this (accounting for weekends) is flagged, not just "not today"

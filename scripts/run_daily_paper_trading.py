@@ -20,6 +20,9 @@ ACCOUNTS = [
     "breakout_nifty50",
     "buy_and_hold_nifty50",
     "ml_strategy_nifty50",
+    "rsi_mean_reversion_nifty50",
+    "bollinger_breakout_nifty50",
+    "adx_trend_nifty50",
 ]
 
 
