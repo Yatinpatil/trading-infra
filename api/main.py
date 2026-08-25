@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.runner import regenerate_dashboard, run_account, run_all, tail_log
+from data.live_quotes import get_live_quotes
 from execution.accounts import ACCOUNTS, account_by_key, load_account_state
 
 FRONTEND_DIST = ROOT / "frontend" / "dist"
@@ -66,6 +67,16 @@ def trigger_run(key: str):
 @app.post("/api/run-all")
 def trigger_run_all():
     return run_all()
+
+
+@app.get("/api/live-quotes")
+def live_quotes(symbols: str):
+    """Display-only current prices from Yahoo Finance (delayed ~15-20 min),
+    for symbols currently held or pending in an account. Never used for
+    trading decisions -- see data/live_quotes.py.
+    """
+    requested = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    return get_live_quotes(requested)
 
 
 @app.get("/api/logs/{name}")

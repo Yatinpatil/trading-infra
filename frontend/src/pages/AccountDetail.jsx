@@ -15,6 +15,13 @@ export default function AccountDetail() {
   const { data: account, error, loading, refetch } = usePolling(fetcher, 30_000);
   const [page, setPage] = useState(0);
 
+  const liveSymbols = useMemo(() => {
+    if (!account) return [];
+    return [...new Set([...account.positions.map((p) => p.symbol), ...account.pending_entries])].sort();
+  }, [account]);
+  const quotesFetcher = useCallback(() => api.getLiveQuotes(liveSymbols), [liveSymbols]);
+  const { data: liveQuotes } = usePolling(quotesFetcher, 60_000);
+
   const pageTrades = useMemo(() => {
     if (!account) return [];
     return account.trades.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -70,6 +77,12 @@ export default function AccountDetail() {
       </div>
 
       <SectionHead title={`Open positions (${account.positions.length})`} />
+      {account.positions.length > 0 && (
+        <p className="mono" style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "-6px 0 10px" }}>
+          Live price is a delayed quote (Yahoo Finance, ~15-20 min) shown for reference only — it never affects fills,
+          which always use NSE's own end-of-day data.
+        </p>
+      )}
       <div className="card" style={{ overflowX: "auto", marginBottom: 28 }}>
         {account.positions.length ? (
           <table>
@@ -80,18 +93,28 @@ export default function AccountDetail() {
                 <th className="num">Entry</th>
                 <th>Entry date</th>
                 <th className="num">Stop</th>
+                <th className="num">Live</th>
+                <th className="num">Unrealized %</th>
               </tr>
             </thead>
             <tbody>
-              {account.positions.map((p) => (
-                <tr key={p.symbol}>
-                  <td>{p.symbol}</td>
-                  <td className="num">{p.quantity}</td>
-                  <td className="num">{formatMoney(p.entry_price)}</td>
-                  <td>{p.entry_date}</td>
-                  <td className="num">{p.stop_price ? formatMoney(p.stop_price) : "—"}</td>
-                </tr>
-              ))}
+              {account.positions.map((p) => {
+                const q = liveQuotes?.[p.symbol];
+                const unrealizedPct = q ? ((q.price - p.entry_price) / p.entry_price) * 100 : null;
+                return (
+                  <tr key={p.symbol}>
+                    <td>{p.symbol}</td>
+                    <td className="num">{p.quantity}</td>
+                    <td className="num">{formatMoney(p.entry_price)}</td>
+                    <td>{p.entry_date}</td>
+                    <td className="num">{p.stop_price ? formatMoney(p.stop_price) : "—"}</td>
+                    <td className="num">{q ? formatMoney(q.price) : "—"}</td>
+                    <td className={`num ${unrealizedPct == null ? "" : unrealizedPct >= 0 ? "pnl-pos" : "pnl-neg"}`}>
+                      {unrealizedPct == null ? "—" : formatPct(unrealizedPct)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         ) : (

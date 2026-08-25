@@ -15,4 +15,6 @@ export const api = {
   runAccount: (key) => request(`/accounts/${key}/run`, { method: "POST" }),
   runAll: () => request("/run-all", { method: "POST" }),
   getLog: (name, lines = 300) => request(`/logs/${name}?lines=${lines}`),
+  getLiveQuotes: (symbols) =>
+    symbols.length ? request(`/live-quotes?symbols=${symbols.join(",")}`) : Promise.resolve({}),
 };
