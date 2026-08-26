@@ -16,6 +16,10 @@ def zscore(series: pd.Series, lookback: int) -> pd.Series:
     return (series - mean) / std
 
 
+def ema(series: pd.Series, lookback: int) -> pd.Series:
+    return series.ewm(span=lookback, adjust=False).mean()
+
+
 def bollinger_bands(series: pd.Series, lookback: int = 20, num_std: float = 2.0) -> pd.DataFrame:
     mid = series.rolling(lookback).mean()
     std = series.rolling(lookback).std()

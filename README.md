@@ -14,7 +14,7 @@ db/            The single SQLite store (data/trading.db): OHLCV, corporate actio
 data/          OHLCV + corporate-action fetch (jugaad-data/NSE) into db/, retry/TTL, quality checks
 indicators/    Causal technical indicators (zscore, RSI, MACD, ADX, ATR, Bollinger, Donchian, ROC)
 strategies/    Strategy interface + mean_reversion, momentum, breakout, buy_and_hold, ml_strategy,
-               rsi_mean_reversion, bollinger_breakout, adx_trend
+               rsi_mean_reversion, bollinger_breakout, adx_trend, macd_crossover, atr_channel_breakout
 engine/        Single-stock and portfolio backtest engines, transaction cost model
 risk/          Position sizing, concurrency/sector/correlation limits
 validation/    Train/test splits, walk-forward validation, grid search, Monte Carlo, benchmark comparison
@@ -85,11 +85,23 @@ Then open `dashboard/index.html` directly in a browser — no server required.
 
 A Windows Task Scheduler job (`NIFTY50_PaperTrading_Daily`) runs `scripts/poll_and_run_paper_trading.py` every 15 minutes from 4:00-6:45 PM IST on weekdays — after NSE's 3:30 PM close, but before NSE's own EOD data is guaranteed to be published. Each invocation is a cheap check (a single-symbol, uncached fetch) for whether today's data is actually out yet; the moment it is, that invocation runs the real step immediately rather than waiting for a fixed later time, and every other invocation that day is then a no-op (`accounts.last_run_date` already matches today). If data still isn't out by 6 PM, the last few polls run the step anyway rather than silently skip the day — the same safety margin the old fixed 6:30 PM trigger gave, just no longer the common case.
 
-The step itself (`scripts/run_daily_paper_trading.py`) steps eight accounts (mean_reversion, momentum, breakout, buy_and_hold, ml_strategy, rsi_mean_reversion, bollinger_breakout, adx_trend, each its own ₹10L NIFTY 50 portfolio) and rebuilds the dashboard. Each account runs in its own subprocess, so one failing account never blocks the rest. Logs: `logs/orchestrator.log` (the day's run summary) and `logs/paper_trading.log` (account-level fill/warning detail).
+The step itself (`scripts/run_daily_paper_trading.py`) steps ten accounts (mean_reversion, momentum, breakout, buy_and_hold, ml_strategy, rsi_mean_reversion, bollinger_breakout, adx_trend, macd_crossover, atr_channel_breakout, each its own ₹10L NIFTY 50 portfolio) and rebuilds the dashboard. Each account runs in its own subprocess, so one failing account never blocks the rest. Logs: `logs/orchestrator.log` (the day's run summary) and `logs/paper_trading.log` (account-level fill/warning detail).
 
 ## Web UI
 
 A FastAPI backend (`api/`) exposes the same account state the dashboard generator reads, plus a "Run Now" / "Run All" trigger; a React app (`frontend/`) polls it for a live, navigable view (per-account detail pages, equity comparison chart, log tailing) instead of the static dashboard's fixed snapshot.
+
+Both the static dashboard and the web UI also show each strategy's latest full-period backtest (CAGR, Sharpe, max drawdown, win rate, trades) next to its live paper-trading numbers — kept as a visibly separate section, since a live account may only be days old while the backtest spans years. That table is populated by `scripts/compare_nifty50_strategies.py` (which persists into the `backtest_results` table on every run, not just prints to console) and is a snapshot from whenever that script was last run, not recomputed on page load. `ml_strategy` has no row there since it's evaluated separately via walk-forward validation (`scripts/evaluate_ml_strategy.py`), a different methodology than the single-pass comparison the others share.
+
+**Running the dashboard so it survives closing your editor**: register it as a Windows Scheduled Task that starts at login and auto-restarts if it crashes, rather than running it in a terminal tied to your IDE session:
+```
+$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c ""<repo>\.venv\Scripts\python.exe" -m uvicorn api.main:app --host 127.0.0.1 --port 8000 >> "<repo>\logs\api_server.log" 2>&1"' -WorkingDirectory '<repo>'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User '<your-username>'
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable
+Register-ScheduledTask -TaskName 'NIFTY50_DashboardServer' -Action $action -Trigger $trigger -Settings $settings -Force
+Start-ScheduledTask -TaskName 'NIFTY50_DashboardServer'
+```
+This starts at your next Windows logon (and immediately, via the last line above) and keeps running independent of any terminal or IDE — but it still runs under your own login, not before it; making it start even before anyone logs in requires registering it with a SYSTEM principal from an elevated (Administrator) PowerShell session.
 
 **Day to day, one process serves both** — build the frontend once (or after changing it), then run only the backend:
 ```
@@ -111,13 +123,13 @@ pytest              # offline suite — no network required
 pytest -m network   # also exercises real NSE endpoints
 ```
 
-195 tests, all passing, in the default (offline) suite.
+217 tests, all passing, in the default (offline) suite.
 
 ## What's actually been found running this
 
-- **Buy-and-hold beat every active strategy** on a 48-stock NIFTY 50 backtest, 2021–2026, net of costs (CAGR 21.6%, Sharpe 1.22). Every rule-based active strategy trailed it: momentum (CAGR 5.8%, Sharpe 0.58), RSI mean-reversion (3.6%, Sharpe 0.62 — the best Sharpe and by far the smallest drawdown of any active strategy, -9.3% vs. -13% to -25% for the rest), mean reversion (3.0%, Sharpe 0.44), breakout (2.4%, Sharpe 0.30), and Bollinger breakout (1.0%, Sharpe 0.16). **ADX trend came back flat-to-negative** (CAGR -0.2%, Sharpe 0.02) — a strategy that's genuinely indistinguishable from noise net of costs, kept live anyway for the same reason the others are: an honest negative result is the point, not a bug to hide.
+- **Buy-and-hold beat every active strategy** on a 48-stock NIFTY 50 backtest, 2021–2026, net of costs (CAGR 21.6%, Sharpe 1.22). Every rule-based active strategy trailed it, ranked by CAGR: MACD crossover (6.1%, Sharpe 0.62 — the best-performing active strategy), momentum (5.8%, Sharpe 0.58), RSI mean-reversion (3.6%, Sharpe 0.62 — tied for best Sharpe and by far the smallest drawdown of any active strategy, -9.3% vs. -13% to -25% for the rest), mean reversion (3.0%, Sharpe 0.44), breakout (2.4%, Sharpe 0.30), ATR channel breakout (1.2%, Sharpe 0.19), and Bollinger breakout (1.0%, Sharpe 0.16). **ADX trend came back flat-to-negative** (CAGR -0.2%, Sharpe 0.02) — a strategy that's genuinely indistinguishable from noise net of costs, kept live anyway for the same reason the others are: an honest negative result is the point, not a bug to hide.
 - **A gradient-boosted classifier overfit badly** with default hyperparameters — ~20-28% CAGR in-sample every walk-forward window, but out-of-sample Sharpe of only 0.26 and wildly unstable per-window returns. Regularizing hard (shallow trees, large leaf minimums, strong L2) raised out-of-sample Sharpe to 0.87, confirmed as a robust region rather than a lucky pick via a 12-point grid search.
-- **Two real data bugs were found and fixed** while backtesting on freshly-downloaded data: `jugaad-data`'s equity-series filter is silently ignored by NSE's API, splicing bond/NCD prices into equity series; and the corporate-action parser missed the "Re 1/-" wording NSE uses for most real stock splits. Outlier days across the NIFTY 50 universe went from 440+ to 8, the remainder being real market events (not bugs). A third, live-only bug: NSE's history endpoint reproducibly drops the newest day when queried with the exact range the cache-extension logic used every day, silently stalling paper trading — fixed by padding that fetch's start date.
+- **Two real data bugs were found and fixed** while backtesting on freshly-downloaded data: `jugaad-data`'s equity-series filter is silently ignored by NSE's API, splicing bond/NCD prices into equity series; and the corporate-action parser missed the "Re 1/-" wording NSE uses for most real stock splits. Outlier days across the NIFTY 50 universe went from 440+ to 8, the remainder being real market events (not bugs). A third, live-only bug: NSE's history endpoint intermittently drops the newest day depending on the exact date range requested, and *which* range gets affected shifts from day to day — a single fixed padding wasn't enough to fully dodge it, so the fetch now retries with several genuinely different range shapes until one actually includes the target date. On days NSE never returns it at all, `data/yahoo_fallback.py` supplies that one missing bar from Yahoo Finance as a last resort — sanity-checked against the last known real NSE close (rejecting anything implying a >20% same-day move, since Yahoo's OHLC comes back split-adjusted unless fetched with `auto_adjust=False`) so a bad fallback bar degrades to "no data today" rather than silently corrupting a fill.
 
 ## Design notes worth knowing before extending this
 

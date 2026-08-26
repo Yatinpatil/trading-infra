@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from analytics.backtest_store import load_backtest_results
 from api.runner import regenerate_dashboard, run_account, run_all, tail_log
 from data.live_quotes import get_live_quotes
 from execution.accounts import ACCOUNTS, account_by_key, load_account_state
@@ -67,6 +68,18 @@ def trigger_run(key: str):
 @app.post("/api/run-all")
 def trigger_run_all():
     return run_all()
+
+
+@app.get("/api/backtest-results")
+def backtest_results():
+    """The latest full-period portfolio backtest per strategy (keyed by the
+    strategy name, e.g. "mean_reversion") -- a multi-year simulation,
+    distinct from and not to be confused with a live account's own (much
+    younger) paper-trading ledger. A strategy with no row here (e.g.
+    ml_strategy) hasn't been run through this comparison -- see
+    scripts/evaluate_ml_strategy.py for its walk-forward evaluation instead.
+    """
+    return load_backtest_results()
 
 
 @app.get("/api/live-quotes")

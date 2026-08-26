@@ -5,13 +5,17 @@ backtest runs don't re-hit NSE. Rows are keyed by (symbol, date); callers
 ask for a date range and the cache is extended (not re-fetched) when the
 requested range grows.
 """
+import logging
 from datetime import date, datetime
 
 import pandas as pd
 
 from data.corporate_actions import adjust_for_corporate_actions, get_corporate_actions
 from data.retry import with_retries
+from data.yahoo_fallback import fetch_yahoo_ohlcv
 from db.connection import connect
+
+logger = logging.getLogger(__name__)
 
 OHLCV_COLUMNS = ["OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"]
 
@@ -93,6 +97,39 @@ def _save_cache(symbol: str, df: pd.DataFrame) -> None:
         )
 
 
+# NSE's history endpoint has been observed to intermittently drop the most
+# recent day for some specific requested date ranges while returning it
+# fine for others -- e.g. (2026-08-21, 2026-08-24) reproducibly missed the
+# 24th while (2026-08-20, 2026-08-24) didn't, and on a later day the exact
+# opposite held for a 5-day- vs. 3-day-wide window. Which range is affected
+# shifts, so no single fixed padding is reliable -- retrying with a few
+# genuinely different range shapes is what actually recovers the missing
+# day in practice.
+_TRAILING_FETCH_OFFSETS_DAYS = (5, 3, 7, 2, 14)
+
+
+def _fetch_trailing_range(symbol: str, cached_end: date, end: date, prev_close: float | None) -> pd.DataFrame:
+    result = pd.DataFrame(columns=OHLCV_COLUMNS)
+    for attempt, offset_days in enumerate(_TRAILING_FETCH_OFFSETS_DAYS):
+        candidate_start = min(cached_end, end - pd.Timedelta(days=offset_days))
+        result = _fetch_raw_ohlcv(symbol, candidate_start, end)
+        if not result.empty and end in result.index.date:
+            if attempt > 0:
+                logger.warning(
+                    "%s: NSE dropped %s from %d earlier fetch attempt(s), recovered on retry",
+                    symbol, end, attempt,
+                )
+            return result
+    logger.warning("%s: NSE never returned %s across %d attempts", symbol, end, len(_TRAILING_FETCH_OFFSETS_DAYS))
+
+    bar = fetch_yahoo_ohlcv(symbol, end, prev_close)
+    if bar is not None:
+        fallback_row = pd.DataFrame([bar], index=pd.DatetimeIndex([pd.Timestamp(end)]))
+        result = pd.concat([result, fallback_row])
+        result = result[~result.index.duplicated(keep="last")].sort_index()
+    return result
+
+
 def get_raw_ohlcv(symbol: str, start, end, use_cache: bool = True) -> pd.DataFrame:
     """Unadjusted OHLCV as reported by NSE, extended/cached across calls."""
     start, end = _to_date(start), _to_date(end)
@@ -100,24 +137,13 @@ def get_raw_ohlcv(symbol: str, start, end, use_cache: bool = True) -> pd.DataFra
 
     if cached is not None and not cached.empty:
         cached_start, cached_end = cached.index.min().date(), cached.index.max().date()
-        missing_ranges = []
-        if start < cached_start:
-            missing_ranges.append((start, cached_start))
-        if end > cached_end:
-            # NSE's history endpoint has been observed to silently drop the
-            # most recent day when the requested range is exactly
-            # (cached_end, end) -- e.g. (2026-08-21, 2026-08-24) reproducibly
-            # returned only the 21st, while widening the start by a few days
-            # to a range NSE hadn't seen before reliably returned all rows
-            # including the 24th. Padding the trailing fetch's start avoids
-            # depending on a single day's boundary matching whatever NSE (or
-            # a caching layer in front of it) is keying on.
-            padded_start = min(cached_end, end - pd.Timedelta(days=5))
-            missing_ranges.append((padded_start, end))
-
         fetched = [cached]
-        for m_start, m_end in missing_ranges:
-            fetched.append(_fetch_raw_ohlcv(symbol, m_start, m_end))
+        if start < cached_start:
+            fetched.append(_fetch_raw_ohlcv(symbol, start, cached_start))
+        if end > cached_end:
+            prev_close = float(cached.loc[pd.Timestamp(cached_end), "CLOSE"])
+            fetched.append(_fetch_trailing_range(symbol, cached_end, end, prev_close))
+
         combined = pd.concat(fetched)
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
     else:

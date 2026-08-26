@@ -6,6 +6,7 @@ from indicators.library import (
     adx,
     atr,
     bollinger_bands,
+    ema,
     macd,
     rate_of_change,
     rolling_correlation,
@@ -28,6 +29,20 @@ def test_zscore_matches_manual_calculation():
     window = s.iloc[1:6]
     expected = (s.iloc[5] - window.mean()) / window.std()
     assert z.iloc[5] == pytest.approx(expected)
+
+
+def test_ema_matches_pandas_ewm_directly():
+    s = _series([10, 12, 11, 13, 12, 14, 13])
+    result = ema(s, lookback=3)
+    expected = s.ewm(span=3, adjust=False).mean()
+    pd.testing.assert_series_equal(result, expected)
+
+
+def test_ema_reacts_faster_than_a_longer_lookback():
+    s = _series([10] * 10 + [20] * 5)
+    fast = ema(s, lookback=3)
+    slow = ema(s, lookback=10)
+    assert fast.iloc[-1] > slow.iloc[-1]
 
 
 def test_bollinger_bands_bracket_mid_by_num_std():

@@ -22,6 +22,10 @@ export default function AccountDetail() {
   const quotesFetcher = useCallback(() => api.getLiveQuotes(liveSymbols), [liveSymbols]);
   const { data: liveQuotes } = usePolling(quotesFetcher, 60_000);
 
+  const backtestFetcher = useCallback(() => api.getBacktestResults(), []);
+  const { data: backtestResults } = usePolling(backtestFetcher, 5 * 60_000);
+  const backtest = backtestResults?.[key];
+
   const pageTrades = useMemo(() => {
     if (!account) return [];
     return account.trades.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -67,13 +71,42 @@ export default function AccountDetail() {
         <Stat label="Equity" value={account.started ? formatMoney(account.equity) : "—"} />
         <Stat label="Cash" value={account.started ? formatMoney(account.cash) : "—"} />
         <Stat label="Today" value={formatPct(account.today_change_pct)} />
-        <Stat label="CAGR" value={m ? formatPct(m.cagr) : "—"} />
-        <Stat label="Sharpe" value={m ? formatNum(m.sharpe) : "—"} />
-        <Stat label="Max DD" value={m ? formatPct(m.max_drawdown, 1) : "—"} />
+        <Stat label="Live CAGR" value={m ? formatPct(m.cagr) : "—"} />
+        <Stat label="Live Sharpe" value={m ? formatNum(m.sharpe) : "—"} />
+        <Stat label="Live Max DD" value={m ? formatPct(m.max_drawdown, 1) : "—"} />
       </div>
+      {account.started && (
+        <p className="mono" style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "-18px 0 24px" }}>
+          "Live" metrics are computed from this account's own paper-trading ledger, which may only be days old —
+          compare against the backtest below, a multi-year simulation, for a statistically meaningful read.
+        </p>
+      )}
 
       <div className="card" style={{ padding: "16px 18px 8px", marginBottom: 28 }}>
         <AccountEquityChart account={account} />
+      </div>
+
+      <SectionHead title="Backtest" />
+      <div className="card" style={{ padding: "16px 18px", marginBottom: 28 }}>
+        {backtest ? (
+          <>
+            <p className="mono" style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "0 0 12px" }}>
+              {backtest.start_date} to {backtest.end_date}, net of costs
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 12 }}>
+              <Stat label="CAGR" value={formatPct(backtest.cagr)} />
+              <Stat label="Sharpe" value={formatNum(backtest.sharpe)} />
+              <Stat label="Max DD" value={formatPct(backtest.max_drawdown, 1)} />
+              <Stat label="Win rate" value={formatPct(backtest.win_rate, 0)} />
+              <Stat label="Trades" value={backtest.num_trades.toLocaleString("en-IN")} />
+            </div>
+          </>
+        ) : (
+          <p style={{ margin: 0, color: "var(--ink-muted)" }}>
+            Not covered by the strategy comparison backtest — see scripts/evaluate_ml_strategy.py's walk-forward
+            evaluation instead.
+          </p>
+        )}
       </div>
 
       <SectionHead title={`Open positions (${account.positions.length})`} />

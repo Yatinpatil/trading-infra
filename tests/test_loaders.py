@@ -131,6 +131,113 @@ def test_fetch_raises_after_exhausting_retries(monkeypatch, isolated_cache):
         loaders_module.get_raw_ohlcv("TEST", "2024-01-20", "2024-01-31", use_cache=False)
 
 
+def test_fetch_trailing_range_retries_a_range_that_dropped_the_target_date(monkeypatch):
+    """NSE has been observed to return a truncated response missing the
+    most recent day for some specific requested ranges while returning it
+    fine for others -- retrying with a different range shape recovers it.
+    """
+    import datetime
+
+    target = datetime.date(2026, 8, 25)
+    attempts = []
+
+    def fake_fetch(symbol, start, end):
+        attempts.append(start)
+        if len(attempts) == 1:
+            return pd.DataFrame(
+                {"OPEN": [100.0], "HIGH": [101.0], "LOW": [99.0], "CLOSE": [100.5], "VOLUME": [1000]},
+                index=pd.DatetimeIndex([pd.Timestamp("2026-08-24")]),
+            )
+        return pd.DataFrame(
+            {"OPEN": [100.0, 101.0], "HIGH": [101.0, 102.0], "LOW": [99.0, 100.0], "CLOSE": [100.5, 101.5], "VOLUME": [1000, 1100]},
+            index=pd.DatetimeIndex(["2026-08-24", "2026-08-25"]),
+        )
+
+    monkeypatch.setattr(loaders_module, "_fetch_raw_ohlcv", fake_fetch)
+    monkeypatch.setattr(loaders_module, "fetch_yahoo_ohlcv", lambda *a, **k: pytest.fail("shouldn't need the Yahoo fallback"))
+
+    result = loaders_module._fetch_trailing_range("TEST", datetime.date(2026, 8, 24), target, prev_close=100.5)
+
+    assert len(attempts) == 2  # first attempt missed, second attempt (different start) recovered it
+    assert target in result.index.date
+
+
+def test_fetch_trailing_range_falls_back_to_yahoo_if_nse_never_returns_the_day(monkeypatch):
+    import datetime
+
+    target = datetime.date(2026, 8, 25)
+
+    def fake_fetch(symbol, start, end):
+        return pd.DataFrame(
+            {"OPEN": [100.0], "HIGH": [101.0], "LOW": [99.0], "CLOSE": [100.5], "VOLUME": [1000]},
+            index=pd.DatetimeIndex(["2026-08-24"]),
+        )
+
+    monkeypatch.setattr(loaders_module, "_fetch_raw_ohlcv", fake_fetch)
+    monkeypatch.setattr(
+        loaders_module,
+        "fetch_yahoo_ohlcv",
+        lambda symbol, target_date, prev_close: {"OPEN": 101.0, "HIGH": 102.0, "LOW": 100.0, "CLOSE": 101.5, "VOLUME": 2000},
+    )
+
+    result = loaders_module._fetch_trailing_range("TEST", datetime.date(2026, 8, 24), target, prev_close=100.5)
+
+    assert target in result.index.date
+    assert result.loc[pd.Timestamp(target), "CLOSE"] == 101.5
+
+
+def test_fetch_trailing_range_gives_up_gracefully_if_nse_and_yahoo_both_miss(monkeypatch):
+    import datetime
+
+    target = datetime.date(2026, 8, 25)
+
+    def fake_fetch(symbol, start, end):
+        return pd.DataFrame(
+            {"OPEN": [100.0], "HIGH": [101.0], "LOW": [99.0], "CLOSE": [100.5], "VOLUME": [1000]},
+            index=pd.DatetimeIndex(["2026-08-24"]),
+        )
+
+    monkeypatch.setattr(loaders_module, "_fetch_raw_ohlcv", fake_fetch)
+    monkeypatch.setattr(loaders_module, "fetch_yahoo_ohlcv", lambda symbol, target_date, prev_close: None)
+
+    result = loaders_module._fetch_trailing_range("TEST", datetime.date(2026, 8, 24), target, prev_close=100.5)
+
+    assert target not in result.index.date  # doesn't raise -- caller treats a missing day as "not out yet"
+    assert not result.empty
+
+
+def test_get_raw_ohlcv_recovers_a_dropped_day_via_cache_extension(monkeypatch, isolated_cache):
+    import jugaad_data.nse as nse_module
+
+    def fake_stock_df(**kwargs):
+        # NSE's real endpoint has been seen to return today's row only for
+        # some requested from_date values -- simulate that by keying off it.
+        # The first retry candidate (offset=5 days back from 2026-08-25,
+        # capped at the cached range's start) lands on 2026-08-20.
+        if kwargs["from_date"].isoformat() == "2026-08-20":
+            return _mock_stock_df([("2026-08-21", 10, 11, 9, 10.5, 100)])
+        return _mock_stock_df(
+            [
+                ("2026-08-24", 11, 12, 10, 11.5, 100),
+                ("2026-08-25", 12, 13, 11, 12.5, 100),
+            ]
+        )
+
+    monkeypatch.setattr(nse_module, "stock_df", fake_stock_df)
+
+    loaders_module._save_cache(
+        "TEST",
+        pd.DataFrame(
+            {"OPEN": [9.0], "HIGH": [9.5], "LOW": [8.5], "CLOSE": [9.2], "VOLUME": [50]},
+            index=pd.DatetimeIndex(["2026-08-21"]),
+        ),
+    )
+
+    result = loaders_module.get_raw_ohlcv("TEST", "2026-08-21", "2026-08-25", use_cache=True)
+
+    assert pd.Timestamp("2026-08-25") in result.index
+
+
 def test_get_raw_ohlcv_serves_subset_range_from_cache_without_refetching(monkeypatch, isolated_cache):
     import jugaad_data.nse as nse_module
 

@@ -23,6 +23,8 @@ ACCOUNTS = [
     "rsi_mean_reversion_nifty50",
     "bollinger_breakout_nifty50",
     "adx_trend_nifty50",
+    "macd_crossover_nifty50",
+    "atr_channel_breakout_nifty50",
 ]
 
 

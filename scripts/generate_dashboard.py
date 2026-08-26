@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from analytics.backtest_store import load_backtest_results
 from execution.accounts import ACCOUNTS, load_account_state
 
 ROOT = Path(__file__).parent.parent
@@ -29,7 +30,7 @@ def load_account(meta: dict) -> dict:
     return state
 
 
-def render(accounts: list[dict]) -> str:
+def render(accounts: list[dict], backtest_results: dict[str, dict]) -> str:
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     data_json = json.dumps(accounts, default=str)
 
@@ -56,6 +57,31 @@ def render(accounts: list[dict]) -> str:
           <td>{a['last_run_date'] or '&mdash;'}</td>
           <td>{status_badge}</td>
         </tr>""")
+
+    backtest_html = []
+    backtest_window = None
+    for a in accounts:
+        bt = backtest_results.get(a["key"])
+        if bt is None:
+            backtest_html.append(f"""
+        <tr>
+          <td><span class="swatch" style="background:{a['color_light']}"></span>{a['label']}</td>
+          <td class="num" colspan="5">&mdash; not covered by this comparison (see scripts/evaluate_ml_strategy.py) &mdash;</td>
+        </tr>""")
+            continue
+        backtest_window = (bt["start_date"], bt["end_date"])
+        backtest_html.append(f"""
+        <tr>
+          <td><span class="swatch" style="background:{a['color_light']}"></span>{a['label']}</td>
+          <td class="num">{bt['cagr']:+.2%}</td>
+          <td class="num">{bt['sharpe']:.2f}</td>
+          <td class="num">{bt['max_drawdown']:+.2%}</td>
+          <td class="num">{bt['win_rate']:.1%}</td>
+          <td class="num">{bt['num_trades']:,}</td>
+        </tr>""")
+    backtest_hint = (
+        f"{backtest_window[0]} to {backtest_window[1]}, net of costs" if backtest_window else "not yet run"
+    )
 
     positions_html = []
     for a in accounts:
@@ -168,6 +194,16 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
     </table>
   </div>
 
+  <div class="section-head"><h2>Backtest performance</h2><span class="hint">{backtest_hint}</span></div>
+  <div class="card" style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Strategy</th><th class="num">CAGR</th><th class="num">Sharpe</th>
+        <th class="num">Max DD</th><th class="num">Win rate</th><th class="num">Trades</th></tr></thead>
+      <tbody>{"".join(backtest_html)}</tbody>
+    </table>
+  </div>
+  <p class="subhead" style="font-size:12.5px;margin-top:8px">A multi-year historical simulation, not the live ledger above &mdash; a strategy's live account may be only days old.</p>
+
   <div class="section-head"><h2>Equity curves</h2><span class="hint">indexed to 100 at each account's start</span></div>
   <div class="card chart-card">
     <div class="legend" id="legend"></div>
@@ -276,7 +312,7 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
 
 def main():
     accounts = [load_account(meta) for meta in ACCOUNTS]
-    html = render(accounts)
+    html = render(accounts, load_backtest_results())
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(html, encoding="utf-8")
     print(f"Dashboard written to {OUTPUT_PATH}")

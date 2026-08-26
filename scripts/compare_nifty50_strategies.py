@@ -7,10 +7,12 @@ the same workflow Phase 6 (analytics/report.py) was built for.
 """
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from analytics.backtest_store import save_backtest_result
 from analytics.metrics import compute_metrics
 from analytics.report import compare_strategies, generate_report
 from configs import load_config
@@ -26,6 +28,8 @@ STRATEGIES = {
     "rsi_mean_reversion": {"lookback": 14, "entry_rsi": 30.0, "exit_rsi": 50.0, "stop_loss_pct": 0.05},
     "bollinger_breakout": {"lookback": 20, "num_std": 2.0, "stop_loss_pct": 0.05},
     "adx_trend": {"lookback": 14, "entry_adx": 25.0, "stop_loss_pct": 0.05},
+    "macd_crossover": {"fast": 12, "slow": 26, "signal": 9, "stop_loss_pct": 0.05},
+    "atr_channel_breakout": {"ema_lookback": 20, "atr_lookback": 14, "num_atr": 2.0, "stop_loss_pct": 0.05},
 }
 
 
@@ -41,6 +45,7 @@ def run_all(start: str, end: str, output_dir: str, initial_capital: float = 1_00
         if not df.empty:
             ohlcv_by_symbol[symbol] = df
 
+    computed_at = datetime.now().isoformat(timespec="seconds")
     metrics_by_strategy = {}
     for name, params in STRATEGIES.items():
         config = {**base_config, "strategy": name, "params": params}
@@ -48,6 +53,7 @@ def run_all(start: str, end: str, output_dir: str, initial_capital: float = 1_00
         result = run_portfolio_backtest(strategy, ohlcv_by_symbol, config, initial_capital)
         metrics = compute_metrics(result.equity_curve, result.trades)
         metrics_by_strategy[name] = metrics
+        save_backtest_result(name, start, end, computed_at, metrics, result.final_equity)
 
         report_path = generate_report(f"{name}_nifty50", result, output_dir)
         print(

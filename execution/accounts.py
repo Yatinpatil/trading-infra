@@ -46,6 +46,14 @@ ACCOUNTS = [
         "key": "adx_trend", "label": "ADX Trend", "config": "adx_trend_nifty50",
         "account": "adx_trend_nifty50_portfolio", "color_light": "#5C7A3D", "color_dark": "#84A85E",
     },
+    {
+        "key": "macd_crossover", "label": "MACD Crossover", "config": "macd_crossover_nifty50",
+        "account": "macd_crossover_nifty50_portfolio", "color_light": "#8E4585", "color_dark": "#AD6BA3",
+    },
+    {
+        "key": "atr_channel_breakout", "label": "ATR Channel Breakout", "config": "atr_channel_breakout_nifty50",
+        "account": "atr_channel_breakout_nifty50_portfolio", "color_light": "#4A4E9C", "color_dark": "#7478C4",
+    },
 ]
 
 STALE_AFTER_DAYS = 3  # a run older than this (accounting for weekends) is flagged, not just "not today"

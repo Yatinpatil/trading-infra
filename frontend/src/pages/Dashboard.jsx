@@ -4,12 +4,17 @@ import { api } from "../api";
 import EquityComparisonChart from "../components/EquityComparisonChart";
 import RunButton from "../components/RunButton";
 import StatusBadge from "../components/StatusBadge";
-import { formatMoney, formatPct } from "../format";
+import { formatMoney, formatNum, formatPct } from "../format";
 import { usePolling } from "../hooks";
 
 export default function Dashboard() {
   const fetcher = useCallback(() => api.listAccounts(), []);
   const { data: accounts, error, loading, refetch } = usePolling(fetcher, 30_000);
+
+  const backtestFetcher = useCallback(() => api.getBacktestResults(), []);
+  // Backtest results only change when someone re-runs the comparison script
+  // by hand, not every trading day -- a slow poll is plenty.
+  const { data: backtestResults } = usePolling(backtestFetcher, 5 * 60_000);
 
   async function handleRunAll() {
     const results = await api.runAll();
@@ -82,6 +87,56 @@ export default function Dashboard() {
             </table>
           </div>
 
+          {backtestResults && (
+            <>
+              <SectionHead title="Backtest performance" hint={backtestHint(backtestResults)} />
+              <div className="card" style={{ overflowX: "auto" }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Strategy</th>
+                      <th className="num">CAGR</th>
+                      <th className="num">Sharpe</th>
+                      <th className="num">Max DD</th>
+                      <th className="num">Win rate</th>
+                      <th className="num">Trades</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {accounts.map((a) => {
+                      const bt = backtestResults[a.key];
+                      return (
+                        <tr key={a.key}>
+                          <td style={{ display: "flex", alignItems: "center", fontWeight: 500 }}>
+                            <span className="swatch" style={{ background: a.color_light }} />
+                            {a.label}
+                          </td>
+                          {bt ? (
+                            <>
+                              <td className="num">{formatPct(bt.cagr)}</td>
+                              <td className="num">{formatNum(bt.sharpe)}</td>
+                              <td className="num">{formatPct(bt.max_drawdown, 1)}</td>
+                              <td className="num">{formatPct(bt.win_rate, 0)}</td>
+                              <td className="num">{bt.num_trades.toLocaleString("en-IN")}</td>
+                            </>
+                          ) : (
+                            <td className="num" colSpan={5} style={{ color: "var(--ink-muted)", fontSize: 12.5 }}>
+                              not covered by this comparison
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mono" style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "8px 0 0" }}>
+                A multi-year historical simulation, not the live ledger above — a strategy's live account may be only
+                days old.
+              </p>
+            </>
+          )}
+
           <SectionHead title="Equity curves" hint="indexed to 100 at each account's start" />
           <div className="card" style={{ padding: "16px 18px 8px" }}>
             <EquityComparisonChart accounts={accounts} />
@@ -90,6 +145,11 @@ export default function Dashboard() {
       )}
     </div>
   );
+}
+
+function backtestHint(backtestResults) {
+  const any = Object.values(backtestResults)[0];
+  return any ? `${any.start_date} to ${any.end_date}, net of costs` : "not yet run";
 }
 
 async function runOne(key) {

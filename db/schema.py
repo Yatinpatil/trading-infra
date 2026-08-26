@@ -98,6 +98,28 @@ CREATE TABLE IF NOT EXISTS ml_models (
     fitted_at TEXT NOT NULL,
     model_blob BLOB NOT NULL
 );
+
+-- One row per strategy: the latest full-period portfolio backtest, kept
+-- separate from the live paper-trading ledger (accounts/trades/equity_history
+-- above) so the two time horizons are never conflated -- a strategy's live
+-- account might be days old while this reflects a multi-year simulation.
+-- Replaced whole each time scripts/compare_nifty50_strategies.py runs, not
+-- appended to: this is a cache of "the latest backtest," not a run history.
+CREATE TABLE IF NOT EXISTS backtest_results (
+    strategy TEXT PRIMARY KEY,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    final_equity REAL NOT NULL,
+    cagr REAL NOT NULL,
+    sharpe REAL NOT NULL,
+    sortino REAL NOT NULL,
+    max_drawdown REAL NOT NULL,
+    win_rate REAL NOT NULL,
+    profit_factor REAL NOT NULL,
+    num_trades INTEGER NOT NULL,
+    total_return REAL NOT NULL
+);
 """
 
 
