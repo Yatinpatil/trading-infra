@@ -81,9 +81,13 @@ def test_fallback_marker_is_per_day(monkeypatch):
 def test_eod_data_is_out_reads_the_canary_symbol(monkeypatch):
     today = date(2026, 8, 25)
 
-    def fake_get_raw_ohlcv(symbol, start, end, use_cache):
+    def fake_get_raw_ohlcv(symbol, start, end, use_cache, allow_yahoo_fallback):
         assert symbol == poll.CANARY_SYMBOL
         assert (start, end, use_cache) == (today - pd.Timedelta(days=14), today, True)
+        # Must never be satisfied by the Yahoo fallback -- otherwise this
+        # check would accept a Yahoo bar as "NSE is out" and trigger the
+        # real step hours before NSE would ever actually publish.
+        assert allow_yahoo_fallback is False
         return pd.DataFrame({"OPEN": [100.0]}, index=pd.DatetimeIndex([pd.Timestamp(today)]))
 
     monkeypatch.setattr(poll, "get_raw_ohlcv", fake_get_raw_ohlcv)

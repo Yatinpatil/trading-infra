@@ -9,7 +9,7 @@ from strategies import get_strategy_class
 from strategies.mean_reversion import MeanReversionStrategy
 
 
-def _fake_ohlcv(symbol, start, end, adjust=True, use_cache=True):
+def _fake_ohlcv(symbol, start, end, adjust=True, use_cache=True, allow_yahoo_fallback=True):
     rng = np.random.default_rng(abs(hash(symbol)) % (2**32))
     dates = pd.bdate_range(start, end)
     closes = 100 + np.abs(rng.normal(0, 1, len(dates)).cumsum())

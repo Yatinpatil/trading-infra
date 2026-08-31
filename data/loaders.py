@@ -108,7 +108,9 @@ def _save_cache(symbol: str, df: pd.DataFrame) -> None:
 _TRAILING_FETCH_OFFSETS_DAYS = (5, 3, 7, 2, 14)
 
 
-def _fetch_trailing_range(symbol: str, cached_end: date, end: date, prev_close: float | None) -> pd.DataFrame:
+def _fetch_trailing_range(
+    symbol: str, cached_end: date, end: date, prev_close: float | None, allow_yahoo_fallback: bool
+) -> pd.DataFrame:
     result = pd.DataFrame(columns=OHLCV_COLUMNS)
     for attempt, offset_days in enumerate(_TRAILING_FETCH_OFFSETS_DAYS):
         candidate_start = min(cached_end, end - pd.Timedelta(days=offset_days))
@@ -122,6 +124,9 @@ def _fetch_trailing_range(symbol: str, cached_end: date, end: date, prev_close: 
             return result
     logger.warning("%s: NSE never returned %s across %d attempts", symbol, end, len(_TRAILING_FETCH_OFFSETS_DAYS))
 
+    if not allow_yahoo_fallback:
+        return result
+
     bar = fetch_yahoo_ohlcv(symbol, end, prev_close)
     if bar is not None:
         fallback_row = pd.DataFrame([bar], index=pd.DatetimeIndex([pd.Timestamp(end)]))
@@ -130,8 +135,17 @@ def _fetch_trailing_range(symbol: str, cached_end: date, end: date, prev_close: 
     return result
 
 
-def get_raw_ohlcv(symbol: str, start, end, use_cache: bool = True) -> pd.DataFrame:
-    """Unadjusted OHLCV as reported by NSE, extended/cached across calls."""
+def get_raw_ohlcv(symbol: str, start, end, use_cache: bool = True, allow_yahoo_fallback: bool = True) -> pd.DataFrame:
+    """Unadjusted OHLCV as reported by NSE, extended/cached across calls.
+
+    `allow_yahoo_fallback` gates data/yahoo_fallback.py's last-resort use --
+    it must stay off for any "has NSE published yet" check (see
+    scripts/poll_and_run_paper_trading.py), or that check would itself
+    silently accept a Yahoo bar as "NSE is out," triggering the real step
+    hours before NSE would ever actually publish and permanently locking in
+    the less-authoritative source for the whole universe every day instead
+    of only the rare day NSE genuinely never delivers.
+    """
     start, end = _to_date(start), _to_date(end)
     cached = _load_cache(symbol) if use_cache else None
 
@@ -142,7 +156,7 @@ def get_raw_ohlcv(symbol: str, start, end, use_cache: bool = True) -> pd.DataFra
             fetched.append(_fetch_raw_ohlcv(symbol, start, cached_start))
         if end > cached_end:
             prev_close = float(cached.loc[pd.Timestamp(cached_end), "CLOSE"])
-            fetched.append(_fetch_trailing_range(symbol, cached_end, end, prev_close))
+            fetched.append(_fetch_trailing_range(symbol, cached_end, end, prev_close, allow_yahoo_fallback))
 
         combined = pd.concat(fetched)
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
@@ -156,14 +170,16 @@ def get_raw_ohlcv(symbol: str, start, end, use_cache: bool = True) -> pd.DataFra
     return combined.loc[mask].copy()
 
 
-def get_ohlcv(symbol: str, start, end, adjust: bool = True, use_cache: bool = True) -> pd.DataFrame:
+def get_ohlcv(
+    symbol: str, start, end, adjust: bool = True, use_cache: bool = True, allow_yahoo_fallback: bool = True
+) -> pd.DataFrame:
     """OHLCV for `symbol` between `start` and `end` (inclusive), split/bonus-adjusted by default.
 
     Adjustment is backward (today's prices are truth; history is scaled down),
     the standard convention so indicators computed over the series don't see
     fake jumps at ex-dates.
     """
-    raw = get_raw_ohlcv(symbol, start, end, use_cache=use_cache)
+    raw = get_raw_ohlcv(symbol, start, end, use_cache=use_cache, allow_yahoo_fallback=allow_yahoo_fallback)
     if raw.empty or not adjust:
         return raw
 

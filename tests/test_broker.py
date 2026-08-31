@@ -63,6 +63,26 @@ def test_trades_and_equity_round_trip_through_new_instance():
     assert list(equity.values) == [100_000, 100_100]
 
 
+def test_trades_includes_holding_days():
+    """analytics.metrics.avg_trade_duration() reads trades["holding_days"]
+    -- the same column engine/portfolio.py's backtest trades always
+    included, but PaperBroker's live trades didn't, which only surfaced
+    once a real paper-trading account closed its first trade (until then
+    compute_metrics never actually touched an empty trades frame's
+    columns) and crashed the dashboard API with a KeyError.
+    """
+    broker = PaperBroker("acct", initial_capital=100_000)
+    broker.open_position("AAA", "2024-01-02", price=100.0, quantity=10, entry_cost=0.0, stop_price=None)
+    broker.close_position("AAA", "2024-01-05", price=110.0, exit_cost=0.0, reason="signal")
+
+    trades = broker.trades()
+    assert trades.iloc[0]["holding_days"] == 3
+
+    from analytics.metrics import avg_trade_duration
+
+    assert avg_trade_duration(trades) == 3.0
+
+
 def test_record_equity_dedupes_same_day_on_read():
     broker = PaperBroker("acct", initial_capital=100_000)
     broker.record_equity("2024-01-02", 100_000)

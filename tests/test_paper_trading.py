@@ -54,7 +54,7 @@ NO_LIMITS_CONFIG = {"costs": {}, "risk": {"position_size_pct": 0.1}, "params": {
 
 
 def _fake_get_ohlcv(data_by_symbol):
-    def fake(symbol, start, end, adjust=True, use_cache=True):
+    def fake(symbol, start, end, adjust=True, use_cache=True, allow_yahoo_fallback=True):
         df = data_by_symbol[symbol]
         start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
         return df.loc[(df.index >= start_ts) & (df.index <= end_ts)]
@@ -163,7 +163,7 @@ def test_execution_is_immune_to_a_pending_future_corporate_action(tmp_path, monk
         ]
     )
 
-    def fake_get_ohlcv(symbol, start, end, adjust=True, use_cache=True):
+    def fake_get_ohlcv(symbol, start, end, adjust=True, use_cache=True, allow_yahoo_fallback=True):
         start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
         window = aaa_raw.loc[(aaa_raw.index >= start_ts) & (aaa_raw.index <= end_ts)].copy()
         if not adjust:
@@ -230,10 +230,10 @@ def test_one_symbols_fetch_failure_does_not_block_the_rest_of_the_universe(tmp_p
     bbb = _ohlcv([("2024-01-01", 50, 51, 49, 50), ("2024-01-02", 50, 51, 49, 50)])
     good = _fake_get_ohlcv({"AAA": aaa, "BBB": bbb})
 
-    def flaky(symbol, start, end, adjust=True, use_cache=True):
+    def flaky(symbol, start, end, adjust=True, use_cache=True, allow_yahoo_fallback=True):
         if symbol == "BBB":
             raise ConnectionError("NSE is down")
-        return good(symbol, start, end, adjust=adjust, use_cache=use_cache)
+        return good(symbol, start, end, adjust=adjust, use_cache=use_cache, allow_yahoo_fallback=allow_yahoo_fallback)
 
     monkeypatch.setattr("execution.paper_trading.get_ohlcv", flaky)
 
@@ -268,3 +268,79 @@ def test_warns_when_a_corporate_action_falls_inside_an_open_holding(tmp_path, mo
         engine.run_daily_step("2024-01-03")  # ex-date falls inside the holding period
 
     assert any("bonus" in record.message for record in caplog.records)
+
+
+class TestYahooFallbackTimingGate:
+    """The Yahoo fallback (data/yahoo_fallback.py) must never substitute for
+    TODAY's still-in-progress trading day -- "NSE hasn't returned it yet" is
+    trivially true at any time before NSE actually publishes, including
+    minutes after market open, so gating only on retry-exhaustion (as the
+    fetch layer itself does) isn't enough. This gate is what actually
+    prevents that: it must hold regardless of which caller triggers the
+    step (the poller's forced fallback, a direct CLI run, or the web UI's
+    "Run Now"/"Run All").
+    """
+
+    def test_a_past_as_of_is_always_safe(self):
+        from datetime import datetime
+
+        from execution.paper_trading import _yahoo_fallback_is_safe
+
+        as_of = pd.Timestamp("2026-08-30")
+        assert _yahoo_fallback_is_safe(as_of, now=datetime(2026, 8, 31, 9, 30)) is True
+
+    def test_todays_as_of_is_unsafe_before_the_fallback_hour(self):
+        from datetime import datetime
+
+        from execution.paper_trading import _yahoo_fallback_is_safe
+
+        as_of = pd.Timestamp("2026-08-31")
+        assert _yahoo_fallback_is_safe(as_of, now=datetime(2026, 8, 31, 9, 30)) is False
+
+    def test_todays_as_of_is_safe_past_the_fallback_hour(self):
+        from datetime import datetime
+
+        from execution.paper_trading import _yahoo_fallback_is_safe
+
+        as_of = pd.Timestamp("2026-08-31")
+        assert _yahoo_fallback_is_safe(as_of, now=datetime(2026, 8, 31, 18, 30)) is True
+
+    def test_run_daily_step_disallows_yahoo_fallback_for_today_before_the_fallback_hour(self, monkeypatch):
+        from datetime import datetime
+
+        aaa = _ohlcv([("2024-01-01", 100, 101, 99, 100)])
+        captured = {}
+
+        def fake_get_ohlcv(symbol, start, end, adjust=True, use_cache=True, allow_yahoo_fallback=True):
+            captured["allow_yahoo_fallback"] = allow_yahoo_fallback
+            return aaa
+
+        monkeypatch.setattr("execution.paper_trading.get_ohlcv", fake_get_ohlcv)
+
+        strategy = FixedSignalStrategy()
+        broker = PaperBroker("acct", initial_capital=100_000)
+        engine = PaperTradingEngine(strategy, NO_LIMITS_CONFIG, broker, ["AAA"], history_days=10)
+
+        engine.run_daily_step("2026-08-31", now=datetime(2026, 8, 31, 9, 30))
+
+        assert captured["allow_yahoo_fallback"] is False
+
+    def test_run_daily_step_allows_yahoo_fallback_for_today_past_the_fallback_hour(self, monkeypatch):
+        from datetime import datetime
+
+        aaa = _ohlcv([("2024-01-01", 100, 101, 99, 100)])
+        captured = {}
+
+        def fake_get_ohlcv(symbol, start, end, adjust=True, use_cache=True, allow_yahoo_fallback=True):
+            captured["allow_yahoo_fallback"] = allow_yahoo_fallback
+            return aaa
+
+        monkeypatch.setattr("execution.paper_trading.get_ohlcv", fake_get_ohlcv)
+
+        strategy = FixedSignalStrategy()
+        broker = PaperBroker("acct", initial_capital=100_000)
+        engine = PaperTradingEngine(strategy, NO_LIMITS_CONFIG, broker, ["AAA"], history_days=10)
+
+        engine.run_daily_step("2026-08-31", now=datetime(2026, 8, 31, 18, 30))
+
+        assert captured["allow_yahoo_fallback"] is True

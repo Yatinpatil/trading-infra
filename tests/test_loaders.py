@@ -156,7 +156,7 @@ def test_fetch_trailing_range_retries_a_range_that_dropped_the_target_date(monke
     monkeypatch.setattr(loaders_module, "_fetch_raw_ohlcv", fake_fetch)
     monkeypatch.setattr(loaders_module, "fetch_yahoo_ohlcv", lambda *a, **k: pytest.fail("shouldn't need the Yahoo fallback"))
 
-    result = loaders_module._fetch_trailing_range("TEST", datetime.date(2026, 8, 24), target, prev_close=100.5)
+    result = loaders_module._fetch_trailing_range("TEST", datetime.date(2026, 8, 24), target, prev_close=100.5, allow_yahoo_fallback=True)
 
     assert len(attempts) == 2  # first attempt missed, second attempt (different start) recovered it
     assert target in result.index.date
@@ -180,7 +180,7 @@ def test_fetch_trailing_range_falls_back_to_yahoo_if_nse_never_returns_the_day(m
         lambda symbol, target_date, prev_close: {"OPEN": 101.0, "HIGH": 102.0, "LOW": 100.0, "CLOSE": 101.5, "VOLUME": 2000},
     )
 
-    result = loaders_module._fetch_trailing_range("TEST", datetime.date(2026, 8, 24), target, prev_close=100.5)
+    result = loaders_module._fetch_trailing_range("TEST", datetime.date(2026, 8, 24), target, prev_close=100.5, allow_yahoo_fallback=True)
 
     assert target in result.index.date
     assert result.loc[pd.Timestamp(target), "CLOSE"] == 101.5
@@ -200,10 +200,61 @@ def test_fetch_trailing_range_gives_up_gracefully_if_nse_and_yahoo_both_miss(mon
     monkeypatch.setattr(loaders_module, "_fetch_raw_ohlcv", fake_fetch)
     monkeypatch.setattr(loaders_module, "fetch_yahoo_ohlcv", lambda symbol, target_date, prev_close: None)
 
-    result = loaders_module._fetch_trailing_range("TEST", datetime.date(2026, 8, 24), target, prev_close=100.5)
+    result = loaders_module._fetch_trailing_range("TEST", datetime.date(2026, 8, 24), target, prev_close=100.5, allow_yahoo_fallback=True)
 
     assert target not in result.index.date  # doesn't raise -- caller treats a missing day as "not out yet"
-    assert not result.empty
+
+
+def test_fetch_trailing_range_never_tries_yahoo_when_fallback_is_disallowed(monkeypatch):
+    """A "has NSE published yet" check (see poll_and_run_paper_trading.py's
+    _eod_data_is_out) must never be satisfiable by the Yahoo fallback --
+    otherwise it would accept a Yahoo bar as "NSE is out" and trigger the
+    real trading step hours before NSE would ever actually publish.
+    """
+    import datetime
+
+    target = datetime.date(2026, 8, 25)
+
+    def fake_fetch(symbol, start, end):
+        return pd.DataFrame(
+            {"OPEN": [100.0], "HIGH": [101.0], "LOW": [99.0], "CLOSE": [100.5], "VOLUME": [1000]},
+            index=pd.DatetimeIndex(["2026-08-24"]),
+        )
+
+    monkeypatch.setattr(loaders_module, "_fetch_raw_ohlcv", fake_fetch)
+    monkeypatch.setattr(
+        loaders_module, "fetch_yahoo_ohlcv", lambda *a, **k: pytest.fail("should not call the Yahoo fallback")
+    )
+
+    result = loaders_module._fetch_trailing_range(
+        "TEST", datetime.date(2026, 8, 24), target, prev_close=100.5, allow_yahoo_fallback=False
+    )
+
+    assert target not in result.index.date
+
+
+def test_get_raw_ohlcv_passes_allow_yahoo_fallback_through(monkeypatch, isolated_cache):
+    import datetime
+
+    loaders_module._save_cache(
+        "TEST",
+        pd.DataFrame(
+            {"OPEN": [9.0], "HIGH": [9.5], "LOW": [8.5], "CLOSE": [9.2], "VOLUME": [50]},
+            index=pd.DatetimeIndex(["2026-08-24"]),
+        ),
+    )
+
+    captured = {}
+
+    def fake_fetch_trailing_range(symbol, cached_end, end, prev_close, allow_yahoo_fallback):
+        captured["allow_yahoo_fallback"] = allow_yahoo_fallback
+        return pd.DataFrame(columns=loaders_module.OHLCV_COLUMNS)
+
+    monkeypatch.setattr(loaders_module, "_fetch_trailing_range", fake_fetch_trailing_range)
+
+    loaders_module.get_raw_ohlcv("TEST", "2026-08-24", datetime.date(2026, 8, 25), allow_yahoo_fallback=False)
+
+    assert captured["allow_yahoo_fallback"] is False
 
 
 def test_get_raw_ohlcv_recovers_a_dropped_day_via_cache_extension(monkeypatch, isolated_cache):

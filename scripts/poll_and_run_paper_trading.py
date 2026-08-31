@@ -58,8 +58,13 @@ def _mark_fallback_attempted(today_str: str) -> None:
 
 
 def _eod_data_is_out(today: date) -> bool:
+    """Whether NSE itself has published -- deliberately never satisfied by
+    the Yahoo fallback (see get_raw_ohlcv's allow_yahoo_fallback), or this
+    check would accept a Yahoo bar as "NSE is out" and trigger the real
+    step hours before NSE would ever actually publish.
+    """
     try:
-        df = get_raw_ohlcv(CANARY_SYMBOL, today - pd.Timedelta(days=14), today, use_cache=True)
+        df = get_raw_ohlcv(CANARY_SYMBOL, today - pd.Timedelta(days=14), today, use_cache=True, allow_yahoo_fallback=False)
     except Exception:
         return False
     return not df.empty and today in df.index.date

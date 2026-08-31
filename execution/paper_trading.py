@@ -29,7 +29,7 @@ Swapping in a real broker later means replacing PaperBroker with a class
 that talks to a broker API — this engine's step logic doesn't change.
 """
 import logging
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 
@@ -41,6 +41,23 @@ from risk.limits import has_room_for_position, within_correlation_limit, within_
 from risk.position_sizing import fixed_fractional_size
 
 logger = logging.getLogger(__name__)
+
+# Yahoo's fallback (data/yahoo_fallback.py) is only safe to use for `as_of`
+# = today once NSE's trading day has genuinely concluded -- "NSE hasn't
+# returned it yet" is trivially true at ANY time before NSE actually
+# publishes, including minutes after market open, and Yahoo's same-day
+# price before then is a live intraday snapshot, not a real close. This
+# gate lives here rather than only in the poller's own canary check
+# (scripts/poll_and_run_paper_trading.py) because every caller of
+# run_daily_step -- the poller's forced fallback, but also a direct CLI
+# run or the web UI's "Run Now"/"Run All" -- goes through this same path,
+# and a canary check that only some callers use isn't a real guarantee.
+# A strictly past `as_of` has no such ambiguity and is always safe.
+YAHOO_FALLBACK_EARLIEST_HOUR = 18
+
+
+def _yahoo_fallback_is_safe(as_of: pd.Timestamp, now: datetime) -> bool:
+    return as_of.date() < now.date() or now.hour >= YAHOO_FALLBACK_EARLIEST_HOUR
 
 
 class PaperTradingEngine:
@@ -60,16 +77,18 @@ class PaperTradingEngine:
         self.sector_map = sector_map or {}
         self.history_days = history_days
 
-    def run_daily_step(self, as_of=None) -> dict:
+    def run_daily_step(self, as_of=None, now: datetime | None = None) -> dict:
         as_of = pd.Timestamp(as_of or date.today()).normalize()
         as_of_str = as_of.date().isoformat()
+        now = now or datetime.now()
         broker = self.broker
 
         if broker.last_run_date == as_of_str:
             return {"skipped": True, "reason": f"already ran for {as_of_str}", "as_of": as_of_str}
 
         start = (as_of - pd.Timedelta(days=self.history_days)).date()
-        raw_by_symbol, adjusted_by_symbol = self._fetch_data(start, as_of)
+        allow_yahoo_fallback = _yahoo_fallback_is_safe(as_of, now)
+        raw_by_symbol, adjusted_by_symbol = self._fetch_data(start, as_of, allow_yahoo_fallback)
 
         if not raw_by_symbol:
             return {
@@ -174,7 +193,7 @@ class PaperTradingEngine:
             "pending_exits_tomorrow": sorted(broker.pending_exits),
         }
 
-    def _fetch_data(self, start, as_of) -> tuple[dict, dict]:
+    def _fetch_data(self, start, as_of, allow_yahoo_fallback: bool) -> tuple[dict, dict]:
         """Raw (money math) and adjusted (signals) OHLCV per symbol, through
         `as_of`. A symbol whose fetch fails (NSE hiccup, delisting, bad
         network day) is logged and skipped for this step rather than
@@ -184,8 +203,8 @@ class PaperTradingEngine:
         raw_by_symbol, adjusted_by_symbol = {}, {}
         for symbol in self.symbols:
             try:
-                raw = get_ohlcv(symbol, start, as_of.date(), adjust=False)
-                adjusted = get_ohlcv(symbol, start, as_of.date(), adjust=True)
+                raw = get_ohlcv(symbol, start, as_of.date(), adjust=False, allow_yahoo_fallback=allow_yahoo_fallback)
+                adjusted = get_ohlcv(symbol, start, as_of.date(), adjust=True, allow_yahoo_fallback=allow_yahoo_fallback)
             except Exception:
                 logger.warning("Skipping %s for %s: data fetch failed", symbol, as_of.date(), exc_info=True)
                 continue

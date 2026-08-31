@@ -38,7 +38,7 @@ class PaperPosition:
 
 TRADE_COLUMNS = [
     "symbol", "entry_date", "entry_price", "exit_date", "exit_price", "quantity",
-    "entry_cost", "exit_cost", "exit_reason", "pnl", "pnl_pct",
+    "entry_cost", "exit_cost", "exit_reason", "pnl", "pnl_pct", "holding_days",
 ]
 
 
@@ -182,4 +182,5 @@ class PaperBroker:
         if not df.empty:
             df["entry_date"] = pd.to_datetime(df["entry_date"])
             df["exit_date"] = pd.to_datetime(df["exit_date"])
+            df["holding_days"] = (df["exit_date"] - df["entry_date"]).dt.days
         return df
